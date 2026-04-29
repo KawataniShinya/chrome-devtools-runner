@@ -1,23 +1,23 @@
 # Chrome DevTools Runner
 
-Chrome DevTools Runner is a Codex skill and command-line runner for validating web applications in a real Chrome browser through [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp).
+Chrome DevTools Runner は、[Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) を通して実際の Chrome ブラウザを操作し、Web アプリケーションを検証するための Codex skill 兼コマンドラインランナーです。
 
-It is designed for user-visible browser checks: logging in, clicking through flows, waiting for asynchronous UI changes, reading the current page, verifying URLs and text, and reporting what a user can actually see.
+用途は、ユーザーに見えるブラウザ動作の確認です。ログイン、画面遷移、ボタンクリック、フォーム入力、非同期 UI の待機、現在ページの読み取り、URL や表示テキストの検証を行い、ユーザーが実際に認識できる内容を根拠付きで報告できます。
 
-## Why This Exists
+## このツールの目的
 
-LLM-assisted development often needs browser confirmation that is more concrete than "the code looks right". This project provides a small runner that Codex can invoke from a repository to operate Chrome through MCP and produce observable evidence:
+LLM を使った開発では、「コード上は正しそう」に留まらず、ブラウザ上で何が見えているかを確認したい場面が多くあります。このプロジェクトは、Codex から呼び出せる小さなランナーとして、Chrome を MCP 経由で操作し、観測可能な証拠を返します。
 
-- the current URL and title
-- visible text on the page
-- accessibility snapshot elements
-- form filling and button clicks through user-facing labels
-- waits and expectations for asynchronous flows
-- tab creation, switching, listing, and closing
+- 現在の URL と title
+- ページ上に表示されているテキスト
+- アクセシビリティスナップショット上の要素
+- ユーザー向けラベルを使ったフォーム入力やクリック
+- 非同期フローに対する wait / expect
+- タブの作成、切り替え、一覧表示、クローズ
 
-The runner is intentionally pragmatic. It prefers browser-visible targets such as labels, roles, text, and accessibility snapshot UIDs, while still keeping DOM/evaluate fallbacks for difficult pages.
+設計は実務寄りです。ラベル、role、表示テキスト、アクセシビリティ snapshot の UID といったブラウザ視点のターゲット解決を優先しつつ、難しいページでは DOM / evaluate のフォールバックも使えるようにしています。
 
-## Repository Layout
+## リポジトリ構成
 
 ```text
 .
@@ -32,38 +32,38 @@ The runner is intentionally pragmatic. It prefers browser-visible targets such a
     └── chrome-devtools-runner.js
 ```
 
-- `SKILL.md` defines the Codex skill and trigger guidance.
-- `agents/openai.yaml` provides agent-facing metadata.
-- `scripts/chrome-devtools-runner.js` is the actual CLI runner.
-- `references/usage-notes.md` contains operational notes for future maintainers.
+- `SKILL.md`: Codex skill の定義とトリガー方針
+- `agents/openai.yaml`: エージェント向けメタデータ
+- `scripts/chrome-devtools-runner.js`: CLI ランナー本体
+- `references/usage-notes.md`: 今後のメンテナ向け運用メモ
 
-## Requirements
+## 動作要件
 
-- Node.js 18 or newer
+- Node.js 18 以上
 - `npx`
 - Google Chrome
-- Network access the first time `npx -y chrome-devtools-mcp@latest` is resolved
+- 初回の `npx -y chrome-devtools-mcp@latest` 解決時にネットワークアクセス可能であること
 
-The runner starts `chrome-devtools-mcp` automatically. There is no package install step for this repository yet.
+このリポジトリ自体にインストール手順はまだありません。ランナーは必要時に `chrome-devtools-mcp` を自動で起動します。
 
-## Installation As A Codex Skill
+## Codex skill としての配置
 
-For a project-local skill, place this directory at:
+プロジェクトローカル skill として使う場合は、次の位置に配置します。
 
 ```text
 .codex/skills/chrome-devtools-runner
 ```
 
-Codex can then use the skill when the user asks for browser-based verification, including vague requests such as:
+この状態で Codex は、次のような曖昧な依頼も含めてブラウザ確認タスクにこの skill を使えます。
 
-- "ブラウザで確認して"
-- "画面を確認して"
-- "実際に操作して"
-- "ユーザー目線で見て"
-- "log in and try it"
-- "check this in the browser"
+- 「ブラウザで確認して」
+- 「画面を確認して」
+- 「実際に操作して」
+- 「ユーザー目線で見て」
+- `log in and try it`
+- `check this in the browser`
 
-When using the runner directly from a host project, keep a small repository-root shim if desired:
+ホストプロジェクト側から直接 runner を使いたい場合は、リポジトリルートに薄い shim を置けます。
 
 ```js
 #!/usr/bin/env node
@@ -71,15 +71,15 @@ When using the runner directly from a host project, keep a small repository-root
 require('./.codex/skills/chrome-devtools-runner/scripts/chrome-devtools-runner.js');
 ```
 
-That allows commands such as:
+これで次のように実行できます。
 
 ```sh
 node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then read page"
 ```
 
-## Basic Usage
+## 基本的な使い方
 
-Run the script from the repository where the web application is being checked:
+Web アプリケーションを確認したいリポジトリのルートで実行します。
 
 ```sh
 node .codex/skills/chrome-devtools-runner/scripts/chrome-devtools-runner.js \
@@ -87,42 +87,42 @@ node .codex/skills/chrome-devtools-runner/scripts/chrome-devtools-runner.js \
   "open http://localhost:3000/login then read page"
 ```
 
-With a root shim:
+ルート shim がある場合:
 
 ```sh
 node chrome-devtools-runner.js --ensure-cdp \
   "open http://localhost:3000/login then read page"
 ```
 
-Login example:
+ログイン確認の例:
 
 ```sh
 node chrome-devtools-runner.js --ensure-cdp \
   "open http://localhost:3000/login then type Email user@example.com then type Password secret123 then click Log in then wait url /dashboard then read page"
 ```
 
-## Browser Modes
+## ブラウザ起動モード
 
-### Default MCP-managed Chrome
+### MCP 管理 Chrome
 
 ```sh
 node chrome-devtools-runner.js "open https://example.com then title"
 ```
 
-In this mode, `chrome-devtools-mcp` manages Chrome itself.
+このモードでは `chrome-devtools-mcp` が Chrome の起動と管理を行います。
 
-### Managed CDP Chrome
+### 管理付き CDP Chrome
 
 ```sh
 node chrome-devtools-runner.js --ensure-cdp \
   "open http://localhost:3000 then read page"
 ```
 
-`--ensure-cdp` checks `http://127.0.0.1:9222/json/version`. If Chrome is not exposing CDP there, the runner starts Chrome with remote debugging enabled and then connects `chrome-devtools-mcp` to that endpoint.
+`--ensure-cdp` は `http://127.0.0.1:9222/json/version` を確認し、そこに CDP が出ていなければ remote debugging 付きで Chrome を起動し、そのエンドポイントに `chrome-devtools-mcp` を接続します。
 
-By default, this mode creates a temporary Chrome profile for each startup. This avoids stale profile locks and prior browser state leaking into the check.
+既定では、起動ごとに一時 Chrome profile を作成します。これにより、古い lock ファイルや過去セッションのブラウザ状態が現在の確認作業に混入するのを避けられます。
 
-### Existing CDP Chrome
+### 既存 CDP Chrome への接続
 
 ```sh
 node chrome-devtools-runner.js \
@@ -130,7 +130,7 @@ node chrome-devtools-runner.js \
   "read page"
 ```
 
-Use this when you started Chrome yourself, for example:
+自分で Chrome を起動済みの場合はこちらを使います。例:
 
 ```sh
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
@@ -138,61 +138,61 @@ Use this when you started Chrome yourself, for example:
   --user-data-dir=/tmp/chrome-debug
 ```
 
-## Options
+## オプション
 
-| Option | Description |
+| オプション | 説明 |
 | --- | --- |
-| `--debug` | Print debug logs from the runner. |
-| `--show-tools` | Print available MCP tool names and descriptions. |
-| `--show-tool-schemas` | Print available MCP tool schemas. Useful when MCP argument behavior changes. |
-| `--timeout <ms>` | JSON-RPC request timeout. Default: `30000`. |
-| `--server-command <command>` | Override the MCP server command. |
-| `--browser-url <url>` | Connect to an existing Chrome DevTools Protocol endpoint. |
-| `--ensure-cdp` | Start Chrome with CDP if the endpoint is not already available. |
-| `--cdp-host <host>` | CDP host for `--ensure-cdp`. Default: `127.0.0.1`. |
-| `--cdp-port <port>` | CDP port for `--ensure-cdp`. Default: `9222`. |
-| `--cdp-startup-timeout <ms>` | How long to wait for CDP startup. Default: `10000`. |
-| `--chrome-path <path>` | Chrome executable path. Defaults to a platform-specific path or `CHROME_PATH`. |
-| `--chrome-user-data-dir <path>` | Chrome profile directory for managed CDP mode. Default: auto-created temporary profile. |
-| `--reuse-chrome-profile` | Reuse the specified Chrome profile directory intentionally. |
-| `--chrome-log-file <path>` | Chrome startup log path. Default: OS temp directory. |
+| `--debug` | runner 側のデバッグログを出力します。 |
+| `--show-tools` | 利用可能な MCP tool 名と説明を表示します。 |
+| `--show-tool-schemas` | 利用可能な MCP tool schema を表示します。MCP 側の引数仕様確認に使います。 |
+| `--timeout <ms>` | JSON-RPC リクエストのタイムアウト。既定値: `30000` |
+| `--server-command <command>` | MCP サーバー起動コマンドを上書きします。 |
+| `--browser-url <url>` | 既存の Chrome DevTools Protocol endpoint に接続します。 |
+| `--ensure-cdp` | endpoint が存在しない場合に Chrome を CDP 付きで起動します。 |
+| `--cdp-host <host>` | `--ensure-cdp` 用の CDP host。既定値: `127.0.0.1` |
+| `--cdp-port <port>` | `--ensure-cdp` 用の CDP port。既定値: `9222` |
+| `--cdp-startup-timeout <ms>` | CDP 起動待ち時間。既定値: `10000` |
+| `--chrome-path <path>` | Chrome 実行ファイルのパス。既定ではプラットフォーム依存パスまたは `CHROME_PATH` |
+| `--chrome-user-data-dir <path>` | 管理付き CDP モードで使う Chrome profile ディレクトリ。既定では自動作成の一時 profile |
+| `--reuse-chrome-profile` | 指定した Chrome profile ディレクトリを意図的に再利用します。 |
+| `--chrome-log-file <path>` | Chrome 起動ログの出力先。既定では OS の一時ディレクトリ |
 
-Environment variables:
+環境変数:
 
 - `MCP_SERVER_COMMAND`
 - `CHROME_PATH`
 - `CHROME_USER_DATA_DIR`
 - `CHROME_LOG_FILE`
 
-If npm cache permissions are broken on the machine, run with a writable cache:
+もし npm cache の権限が壊れている環境なら、書き込み可能な cache を明示します。
 
 ```sh
 env npm_config_cache=/tmp/npm-cache node chrome-devtools-runner.js --ensure-cdp "open https://example.com then title"
 ```
 
-## Instruction Syntax
+## 命令構文
 
-Instructions are plain text steps separated by `then`, `and`, newlines, or Japanese punctuation.
+命令はプレーンテキストのステップ列です。`then`、`and`、改行、日本語句読点で区切れます。
 
 ```sh
 node chrome-devtools-runner.js --ensure-cdp \
   "open http://localhost:3000 then click Login then wait Dashboard then read page"
 ```
 
-### Page And Tab Actions
+### ページ・タブ操作
 
-| Action | Example |
+| 操作 | 例 |
 | --- | --- |
-| Open in the current tab | `open http://localhost:3000` |
-| Open a new tab | `new tab http://localhost:3000/favorites` |
-| List tabs | `list tabs` |
-| Switch tabs | `switch tab last`, `switch tab 1`, `switch tab Dashboard` |
-| Close tabs | `close tab current`, `close tab last` |
-| Read current page | `read page` |
-| Get title | `title` |
-| Snapshot interactive elements | `snapshot` |
+| 現在タブで開く | `open http://localhost:3000` |
+| 新しいタブで開く | `new tab http://localhost:3000/favorites` |
+| タブ一覧表示 | `list tabs` |
+| タブ切り替え | `switch tab last`, `switch tab 1`, `switch tab Dashboard` |
+| タブを閉じる | `close tab current`, `close tab last` |
+| 現在ページを読む | `read page` |
+| title を取得 | `title` |
+| インタラクティブ要素を snapshot | `snapshot` |
 
-Japanese aliases are also supported for common checks:
+よく使う日本語エイリアスも入っています。
 
 - `画面を確認して`
 - `ページを確認して`
@@ -201,46 +201,46 @@ Japanese aliases are also supported for common checks:
 - `切り替えて`
 - `閉じて`
 
-### Interaction Actions
+### 操作系アクション
 
-| Action | Example |
+| 操作 | 例 |
 | --- | --- |
-| Click | `click Log in`, `click #submit` |
-| Type/fill | `type Email user@example.com` |
-| Type/fill quoted text | `type Search "mobile suit"` |
-| Type into active element | `type hello` |
-| Press a key | `press Enter`, `press Meta+L` |
+| クリック | `click Log in`, `click #submit` |
+| 入力 | `type Email user@example.com` |
+| クォート付き入力 | `type Search "mobile suit"` |
+| アクティブ要素に入力 | `type hello` |
+| キー入力 | `press Enter`, `press Meta+L` |
 
-For `click` and `type`, the runner first tries to resolve targets from the MCP accessibility snapshot and operate by UID. It falls back to DOM-based operations when snapshot resolution is not sufficient.
+`click` と `type` は、まず MCP のアクセシビリティ snapshot からターゲット解決を試し、UID ベースで操作します。snapshot 解決だけでは不十分な場合に DOM ベースのフォールバックへ落ちます。
 
-### Wait And Expect Actions
+### wait / expect 系アクション
 
-| Action | Example |
+| 操作 | 例 |
 | --- | --- |
-| Wait for visible text | `wait Dashboard` |
-| Wait for URL substring | `wait url /dashboard` |
-| Wait for text to disappear | `wait text gone Loading...` |
-| Expect visible text | `expect text You're logged in!` |
-| Expect URL substring | `expect url /dashboard` |
-| Expect title substring | `expect title Dashboard` |
+| テキスト表示待ち | `wait Dashboard` |
+| URL 部分一致待ち | `wait url /dashboard` |
+| テキスト消滅待ち | `wait text gone Loading...` |
+| テキスト期待値 | `expect text You're logged in!` |
+| URL 期待値 | `expect url /dashboard` |
+| title 期待値 | `expect title Dashboard` |
 
-Japanese aliases:
+日本語エイリアス:
 
 - `url /dashboard になるまで待って`
 - `Loading... が消えるまで待って`
 
-### Evaluate JavaScript
+### JavaScript 評価
 
 ```sh
 node chrome-devtools-runner.js --ensure-cdp \
   "open http://localhost:3000 then eval () => location.href"
 ```
 
-Use `eval` sparingly. Prefer user-visible actions and expectations for browser checks. Evaluation is useful for targeted technical evidence such as video playback state, cache state, or application-specific diagnostics.
+`eval` は補助用途に留めるのが前提です。ブラウザ確認では、なるべくユーザーに見えるアクションと期待値で組み立ててください。技術的根拠として、動画再生状態、キャッシュ状態、アプリ固有の診断値を取りたいときに有効です。
 
-## Output
+## 出力
 
-The runner prints one line or block per action. Example:
+runner はアクションごとに 1 行または 1 ブロックを出力します。例:
 
 ```text
 Opened http://localhost:3000/login
@@ -254,45 +254,45 @@ Text: dashboard user you're logged in!
 Elements: 12
 ```
 
-Sensitive values are masked when the target looks like a password, passcode, secret, or token field.
+入力対象が password、passcode、secret、token らしい場合は、値をマスクして出力します。
 
-## Recommended Validation Pattern
+## 推奨する検証パターン
 
-For application checks, prefer this shape:
+Web アプリ確認では、次の流れが扱いやすいです。
 
-1. `open` the target page.
-2. `read page` or `snapshot` to observe what the browser sees.
-3. Operate with user-facing labels: `type Email ...`, `click Log in`.
-4. Use `wait url`, `wait`, or `wait text gone` for asynchronous changes.
-5. Use `expect text`, `expect url`, or `expect title` for final assertions.
-6. Report the browser-visible result first, then any technical evidence.
+1. `open` で対象ページを開く
+2. `read page` または `snapshot` でブラウザ視点の状態を観察する
+3. `type Email ...`、`click Log in` のようにユーザー向けラベルで操作する
+4. 非同期変化に対して `wait url`、`wait`、`wait text gone` を入れる
+5. 最後に `expect text`、`expect url`、`expect title` で確認する
+6. レポートでは、まずブラウザ上で見えた結果を書き、その後に技術的根拠を添える
 
-Example:
+例:
 
 ```sh
 node chrome-devtools-runner.js --ensure-cdp \
   "open http://localhost:3000/login then type Email user@example.com then type Password secret123 then click Log in then wait url /dashboard then expect text You're logged in! then read page"
 ```
 
-## Troubleshooting
+## トラブルシューティング
 
-### Chrome does not start with `--ensure-cdp`
+### `--ensure-cdp` で Chrome が起動しない
 
-The runner prints the Chrome process status and log path:
+runner は Chrome プロセス状態とログファイルの場所を表示します。
 
 ```text
 [cdp] starting Chrome pid=12345 port=9222 userDataDir=/tmp/chrome-devtools-runner-abc123
 [error] Chrome exited before CDP became available ... See /tmp/chrome-devtools-runner.chrome.log
 ```
 
-Inspect the log file first. Common causes are:
+まずログファイルを確認してください。よくある原因:
 
-- Chrome cannot launch in the current sandbox or desktop session.
-- The requested CDP port is already occupied.
-- A reused profile directory is locked by another Chrome process.
-- The Chrome path is incorrect.
+- 現在の sandbox やデスクトップセッションでは Chrome を起動できない
+- 指定した CDP port が既に使われている
+- 再利用した profile ディレクトリが他の Chrome に lock されている
+- Chrome のパス指定が誤っている
 
-Prefer the default temporary profile. Use a persistent profile only when the check explicitly needs prior login state or browser data:
+基本は一時 profile のまま使う方が安定します。永続 profile が必要なのは、ログイン状態やブラウザデータを意図的に引き継ぎたい場合だけです。
 
 ```sh
 node chrome-devtools-runner.js \
@@ -302,74 +302,68 @@ node chrome-devtools-runner.js \
   "open http://localhost:3000"
 ```
 
-### MCP tool behavior changes
-
-Use:
+### MCP tool の仕様が変わった
 
 ```sh
 node chrome-devtools-runner.js --ensure-cdp --show-tool-schemas
 ```
 
-This prints the MCP tool schemas so the runner can be adjusted to the current `chrome-devtools-mcp` version.
+これで現在の `chrome-devtools-mcp` が公開している tool schema を確認できます。MCP 側の引数仕様が変わったときに、runner 側の追従に使います。
 
-### Page actions affect the wrong tab
-
-Use:
+### 別タブが意図せず操作される
 
 ```sh
 node chrome-devtools-runner.js --ensure-cdp "list tabs"
 ```
 
-The selected tab is marked with `*`. The runner tracks MCP's selected page and uses that for subsequent actions.
+選択中タブは `*` で表示されます。runner は MCP が selected として返すページを優先して以後の操作対象を追跡します。
 
-### npm cache permission errors
-
-Use a writable npm cache:
+### npm cache の権限エラーが出る
 
 ```sh
 env npm_config_cache=/tmp/npm-cache node chrome-devtools-runner.js --ensure-cdp "open https://example.com"
 ```
 
-## Security Notes
+## セキュリティ注意点
 
-Chrome DevTools MCP can inspect and modify browser state. Do not connect it to a browser profile containing sensitive data unless that is intentional.
+Chrome DevTools MCP はブラウザ状態を参照・変更できます。機密データを含む常用 profile に接続するのは、意図した場合だけにしてください。
 
-For safer checks:
+より安全に使うには:
 
-- prefer `--ensure-cdp` with the default temporary profile
-- avoid persistent profiles unless required
-- avoid entering real credentials
-- avoid broad `eval` usage
-- mask or omit secrets in logs and reports
+- `--ensure-cdp` の既定である一時 profile を使う
+- 永続 profile の利用は必要時だけに限定する
+- 実運用の認証情報は避ける
+- 広い `eval` 使用を避ける
+- ログやレポートに secrets を出さない
 
-## Development
+## 開発時の確認
 
-Syntax check:
+構文チェック:
 
 ```sh
 node --check scripts/chrome-devtools-runner.js
 ```
 
-List MCP tools:
+MCP tool 一覧:
 
 ```sh
 node scripts/chrome-devtools-runner.js --ensure-cdp --show-tools
 ```
 
-Run a smoke test:
+スモークテスト:
 
 ```sh
 node scripts/chrome-devtools-runner.js --ensure-cdp \
   "open https://example.com then wait Example Domain then read page"
 ```
 
-When changing tab behavior, verify:
+タブ関連を変更したときの確認:
 
 ```sh
 node scripts/chrome-devtools-runner.js --ensure-cdp \
   "new tab https://example.com then new tab https://example.org then list tabs then switch tab last then read page then close tab current then list tabs"
 ```
 
-## License
+## ライセンス
 
-MIT. See [LICENSE](LICENSE).
+MIT。詳細は [LICENSE](LICENSE) を参照してください。
