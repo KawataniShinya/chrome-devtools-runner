@@ -1,0 +1,9 @@
+schema_version: "v1"
+name_for_model: "chrome-devtools-runner"
+name_for_human: "chrome-devtools-runner"
+description_for_model: "Use this skill to validate web application behavior in Chrome through Chrome DevTools MCP, including vague requests such as browser-check this, verify the screen, actually operate it, user-visible confirmation, login flows, UI verification, playback checks, history/favorites checks, and browser-driven acceptance testing."
+description_for_human: "Run browser checks and user-visible verification through Chrome DevTools MCP"
+interface:
+  display_name: "Chrome DevTools Runner"
+  short_description: "Run browser checks through Chrome DevTools MCP"
+  default_prompt: "Use $chrome-devtools-runner to validate a web flow in Chrome, operate the UI as a user would, and report the observed user-visible behavior."
