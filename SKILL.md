@@ -24,11 +24,12 @@ Use the bundled runner script for browser-driven validation.
 
 ## Preferred usage
 
-- Use high-level actions such as `open`, `new tab`, `list tabs`, `switch tab`, `close tab`, `click`, `type`, `wait`, `wait url`, `wait text gone`, `expect text`, `expect url`, `expect title`, `read page`, and `snapshot`.
+- Use high-level actions such as `open`, `new tab`, `list tabs`, `switch tab`, `close tab`, `click`, `type`, `wait`, `wait url`, `wait text gone`, `expect text`, `expect url`, `expect title`, `read page`, `snapshot`, `accept dialog`, and `dismiss dialog`.
 - Prefer user-visible labels over CSS selectors where possible.
 - For web-app checks, verify both action success and visible outcome.
 - When a flow is asynchronous, add `wait` and `expect` steps instead of relying on timing assumptions.
 - When a request only says "confirm in browser" or similar, default to `open`, `read page`, `click`, `type`, `wait`, `expect`, and finish with a short user-visible summary.
+- When a destructive action opens a native browser confirmation dialog, use `accept dialog` or `dismiss dialog` explicitly instead of assuming the page will continue.
 - When using `--ensure-cdp`, prefer the default temporary profile unless the task explicitly needs a persistent browser state. Use `--reuse-chrome-profile` only when persistence is intentional.
 - Use `--show-tool-schemas` when MCP tool argument behavior changes or needs confirmation.
 

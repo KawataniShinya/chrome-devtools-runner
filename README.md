@@ -188,6 +188,7 @@ node chrome-devtools-runner.js --ensure-cdp \
 | タブ一覧表示 | `list tabs` |
 | タブ切り替え | `switch tab last`, `switch tab 1`, `switch tab Dashboard` |
 | タブを閉じる | `close tab current`, `close tab last` |
+| 確認ダイアログ | `accept dialog`, `dismiss dialog` |
 | 現在ページを読む | `read page` |
 | title を取得 | `title` |
 | インタラクティブ要素を snapshot | `snapshot` |

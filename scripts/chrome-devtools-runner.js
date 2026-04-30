@@ -593,6 +593,26 @@ class ChromeMcpCli {
             return {type: 'click', selector: clickJaMatch[1].trim()};
         }
 
+        const acceptDialogMatch = segment.match(/^(?:accept\s+dialog|confirm\s+dialog|dialog\s+accept)$/i);
+        if (acceptDialogMatch) {
+            return {type: 'dialog', action: 'accept'};
+        }
+
+        const acceptDialogJaMatch = segment.match(/^(?:ダイアログを)?(?:承認|許可|確認して|受け入れて|OKして|受け入れる)$/i);
+        if (acceptDialogJaMatch) {
+            return {type: 'dialog', action: 'accept'};
+        }
+
+        const dismissDialogMatch = segment.match(/^(?:dismiss\s+dialog|cancel\s+dialog|dialog\s+dismiss)$/i);
+        if (dismissDialogMatch) {
+            return {type: 'dialog', action: 'dismiss'};
+        }
+
+        const dismissDialogJaMatch = segment.match(/^(?:ダイアログを)?(?:閉じて|キャンセルして|拒否して|却下して|取り消して|キャンセル)$/i);
+        if (dismissDialogJaMatch) {
+            return {type: 'dialog', action: 'dismiss'};
+        }
+
         const waitMatch = segment.match(/^wait(?:\s+for)?\s+(.+)$/i);
         if (waitMatch) {
             const rawTarget = waitMatch[1].trim();
@@ -685,7 +705,22 @@ class ChromeMcpCli {
         const actions = this.parseInstruction(instruction);
         const outputs = [];
 
-        for (const action of actions) {
+        for (let i = 0; i < actions.length; i += 1) {
+            const action = actions[i];
+            const nextAction = actions[i + 1] || null;
+
+            if (action.type === 'click' && nextAction && nextAction.type === 'dialog') {
+                outputs.push(await this.clickSelector(action.selector, {dialogAction: nextAction.action}));
+                i += 1;
+                continue;
+            }
+
+            if (action.type === 'eval' && nextAction && nextAction.type === 'dialog') {
+                outputs.push(await this.evaluateScript(action.script, nextAction.action));
+                i += 1;
+                continue;
+            }
+
             outputs.push(await this.executeAction(action));
         }
 
@@ -694,7 +729,7 @@ class ChromeMcpCli {
 
     async executeAction(action) {
         try {
-            if (!['open', 'new-tab', 'switch-tab', 'close-tab', 'list-tabs'].includes(action.type)) {
+            if (!['open', 'new-tab', 'switch-tab', 'close-tab', 'list-tabs', 'dialog'].includes(action.type)) {
                 await this.ensureSelectedPageContext();
             }
 
@@ -737,6 +772,8 @@ class ChromeMcpCli {
                 return this.evaluateScript(action.script);
             case 'press':
                 return this.pressKey(action.key);
+            case 'dialog':
+                return this.handleDialog(action.action);
             default:
                 throw new Error(`Unknown action type: ${action.type}`);
             }
@@ -829,7 +866,13 @@ class ChromeMcpCli {
         return `Opened new tab ${url}`;
     }
 
-    async clickSelector(selector) {
+    async clickSelector(selector, options = {}) {
+        const dialogAction = options.dialogAction || null;
+
+        if (dialogAction) {
+            return this.clickSelectorWithDom(selector, {dialogAction});
+        }
+
         const resolved = await this.resolveSnapshotTarget(selector, {mode: 'click'});
         if (resolved) {
             const tool = this.requireTool('click');
@@ -914,14 +957,33 @@ class ChromeMcpCli {
         return `Title: ${typeof payload === 'string' ? payload : JSON.stringify(payload)}`;
     }
 
-    async evaluateScript(script) {
+    async evaluateScript(script, dialogAction = null) {
         const tool = this.requireTool('evaluate_script');
-        const result = await this.client.callTool(tool, {
+        const request = {
             function: script,
-        });
+        };
 
-        const payload = unwrapToolResult(result);
-        return `Eval: ${typeof payload === 'string' ? payload : JSON.stringify(payload)}`;
+        if (dialogAction) {
+            request.dialogAction = dialogAction;
+        }
+
+        const result = await this.client.callTool(tool, request);
+
+        const response = unwrapToolResult(result);
+        return `Eval: ${typeof response === 'string' ? response : JSON.stringify(response)}`;
+    }
+
+    async handleDialog(action = 'accept', promptText = null) {
+        const tool = this.requireTool('handle_dialog');
+        const payload = {action};
+
+        if (promptText !== null && promptText !== undefined && String(promptText).length > 0) {
+            payload.promptText = String(promptText);
+        }
+
+        await this.client.callTool(tool, payload);
+        this.latestSnapshot = null;
+        return `Dialog ${action}ed`;
     }
 
     async pressKey(key) {
@@ -1067,10 +1129,10 @@ class ChromeMcpCli {
         };
     }
 
-    async clickSelectorWithDom(selector) {
+    async clickSelectorWithDom(selector, options = {}) {
         const tool = this.requireTool('evaluate_script');
         const selectorLiteral = JSON.stringify(selector);
-        const result = await this.client.callTool(tool, {
+        const toolPayload = {
             function: `() => {
                 const selector = ${selectorLiteral};
                 const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
@@ -1100,7 +1162,13 @@ class ChromeMcpCli {
                 element.click();
                 return { ok: true, selector, tagName: element.tagName };
             }`,
-        });
+        };
+
+        if (options.dialogAction) {
+            toolPayload.dialogAction = options.dialogAction;
+        }
+
+        const result = await this.client.callTool(tool, toolPayload);
 
         const payload = unwrapToolResult(result);
         if (!payload || payload.ok !== true) {
