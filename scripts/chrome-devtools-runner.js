@@ -703,6 +703,21 @@ class ChromeMcpCli {
             return {type: 'snapshot'};
         }
 
+        const readViewportMatch = segment.match(/^(?:read\s+viewport|viewport\s+info|show\s+viewport)$/i);
+        if (readViewportMatch || /^(?:viewport|画面幅|画面サイズ)(?:を)?(?:確認して|見て|表示して)$/i.test(segment)) {
+            return {type: 'read-viewport'};
+        }
+
+        const viewportMatch = segment.match(/^(?:set\s+viewport|viewport|set\s+screen|screen)\s+(.+)$/i);
+        if (viewportMatch) {
+            return {type: 'set-viewport', value: stripWrappingQuotes(viewportMatch[1].trim())};
+        }
+
+        const viewportJaMatch = segment.match(/^(?:画面幅|画面サイズ|viewport)\s*(.+?)\s*(?:に|へ)?(?:設定して|切り替えて|して)$/i);
+        if (viewportJaMatch) {
+            return {type: 'set-viewport', value: stripWrappingQuotes(viewportJaMatch[1].trim())};
+        }
+
         const evalMatch = segment.match(/^(?:eval|evaluate|js)\s+([\s\S]+)$/i);
         if (evalMatch) {
             return {type: 'eval', script: stripWrappingQuotes(evalMatch[1].trim())};
@@ -808,6 +823,10 @@ class ChromeMcpCli {
                 return this.expectText(action.value);
             case 'snapshot':
                 return this.snapshotSummary();
+            case 'set-viewport':
+                return this.setViewport(action.value);
+            case 'read-viewport':
+                return this.readViewport();
             case 'eval':
                 return this.evaluateScript(action.script);
             case 'press':
@@ -1182,6 +1201,63 @@ class ChromeMcpCli {
         const snapshot = await this.refreshSnapshot();
         const elements = parseSnapshotElements(snapshot.text);
         return `Snapshot: ${elements.length} interactive-ish nodes\n${renderElementSummary(elements.slice(0, 20))}`;
+    }
+
+    async setViewport(value) {
+        const viewport = parseViewportSpec(value);
+        const toolName = this.hasTool('emulate') ? 'emulate' : null;
+        const resizeTool = this.hasTool('resize_page') ? 'resize_page' : null;
+
+        if (toolName) {
+            const payload = {};
+            if (viewport.emulateValue) {
+                payload.viewport = viewport.emulateValue;
+            }
+            if (viewport.userAgent) {
+                payload.userAgent = viewport.userAgent;
+            }
+            if (viewport.colorScheme) {
+                payload.colorScheme = viewport.colorScheme;
+            }
+            if (viewport.networkConditions) {
+                payload.networkConditions = viewport.networkConditions;
+            }
+            await this.client.callTool(toolName, payload);
+            this.latestSnapshot = null;
+            return `Viewport set to ${viewport.label}`;
+        }
+
+        if (resizeTool) {
+            await this.client.callTool(resizeTool, {
+                width: viewport.width,
+                height: viewport.height,
+            });
+            this.latestSnapshot = null;
+            return `Viewport resized to ${viewport.width}x${viewport.height}`;
+        }
+
+        throw new Error('Viewport tools are unavailable.');
+    }
+
+    async readViewport() {
+        const page = await this.getCurrentPageState();
+        const tool = this.requireTool('evaluate_script');
+        const result = await this.client.callTool(tool, {
+            function: '() => ({ innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWidth: window.outerWidth, outerHeight: window.outerHeight, devicePixelRatio: window.devicePixelRatio, userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints || 0, hoverNone: window.matchMedia(\'(hover: none)\').matches, pointerCoarse: window.matchMedia(\'(pointer: coarse)\').matches })',
+        });
+        const info = unwrapToolResult(result) || {};
+
+        return `Viewport: ${JSON.stringify({
+            url: page.url || '(unknown)',
+            width: info.innerWidth ?? null,
+            height: info.innerHeight ?? null,
+            outerWidth: info.outerWidth ?? null,
+            outerHeight: info.outerHeight ?? null,
+            devicePixelRatio: info.devicePixelRatio ?? null,
+            maxTouchPoints: info.maxTouchPoints ?? null,
+            hoverNone: info.hoverNone ?? null,
+            pointerCoarse: info.pointerCoarse ?? null,
+        })}`;
     }
 
     async readPage() {
@@ -2335,6 +2411,60 @@ function normalizeBrowserUrl(value) {
         : `http://${trimmed}`;
 
     return withProtocol.replace(/\/+$/, '');
+}
+
+function parseViewportSpec(value) {
+    const raw = stripWrappingQuotes(String(value || '').trim());
+    if (!raw) {
+        throw new Error('Viewport value must not be empty.');
+    }
+
+    const normalized = raw.toLowerCase().replace(/\s+/g, '');
+    const presets = {
+        mobile: {width: 390, height: 844, devicePixelRatio: 3, mobile: true, touch: true, label: 'mobile 390x844'},
+        iphone: {width: 390, height: 844, devicePixelRatio: 3, mobile: true, touch: true, label: 'iphone 390x844'},
+        tablet: {width: 768, height: 1024, devicePixelRatio: 2, mobile: true, touch: true, label: 'tablet 768x1024'},
+        desktop: {width: 1440, height: 900, devicePixelRatio: 1, mobile: false, touch: false, label: 'desktop 1440x900'},
+    };
+
+    if (presets[normalized]) {
+        const preset = presets[normalized];
+        return {
+            ...preset,
+            emulateValue: `${preset.width}x${preset.height}x${preset.devicePixelRatio}${preset.mobile ? ',mobile' : ''}${preset.touch ? ',touch' : ''}`,
+            userAgent: null,
+            colorScheme: null,
+            networkConditions: null,
+        };
+    }
+
+    const match = raw.match(/^(\d+)\s*[x×]\s*(\d+)(?:\s*[x×]\s*(\d+(?:\.\d+)?))?(?:\s*,\s*(.*))?$/i);
+    if (!match) {
+        throw new Error(`Unsupported viewport value "${value}". Use mobile, tablet, desktop, or WIDTHxHEIGHT[xDPR][,mobile][,touch][,landscape].`);
+    }
+
+    const width = Number(match[1]);
+    const height = Number(match[2]);
+    const dpr = typeof match[3] !== 'undefined' ? Number(match[3]) : 1;
+    const flags = String(match[4] || '').split(/\s*,\s*/).map(flag => flag.trim().toLowerCase()).filter(Boolean);
+    const mobile = flags.includes('mobile');
+    const touch = flags.includes('touch') || mobile;
+    const landscape = flags.includes('landscape');
+    const finalWidth = landscape ? height : width;
+    const finalHeight = landscape ? width : height;
+
+    return {
+        width: finalWidth,
+        height: finalHeight,
+        devicePixelRatio: dpr,
+        mobile,
+        touch,
+        label: raw,
+        emulateValue: `${finalWidth}x${finalHeight}x${dpr}${mobile ? ',mobile' : ''}${touch ? ',touch' : ''}${landscape ? ',landscape' : ''}`,
+        userAgent: null,
+        colorScheme: null,
+        networkConditions: null,
+    };
 }
 
 async function ensureCdp(options) {

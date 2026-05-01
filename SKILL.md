@@ -24,11 +24,12 @@ Use the bundled runner script for browser-driven validation.
 
 ## Preferred usage
 
-- Use high-level actions such as `open`, `new tab`, `list tabs`, `switch tab`, `close tab`, `click`, `type`, `submit`, `back`, `forward`, `reload`, `wait`, `wait url`, `wait text gone`, `expect text`, `expect url`, `expect title`, `read page`, `snapshot`, `accept dialog`, and `dismiss dialog`.
+- Use high-level actions such as `open`, `new tab`, `list tabs`, `switch tab`, `close tab`, `click`, `type`, `submit`, `back`, `forward`, `reload`, `set viewport`, `read viewport`, `wait`, `wait url`, `wait text gone`, `expect text`, `expect url`, `expect title`, `read page`, `snapshot`, `accept dialog`, and `dismiss dialog`.
 - Prefer user-visible labels over CSS selectors where possible.
 - For web-app checks, verify both action success and visible outcome.
 - When a flow is asynchronous, add `wait` and `expect` steps instead of relying on timing assumptions.
 - When a request only says "confirm in browser" or similar, default to `open`, `read page`, `click`, `type`, `submit`, `back`, `forward`, `reload`, `wait`, `expect`, and finish with a short user-visible summary.
+- When verifying responsive layouts, use `set viewport` and `read viewport` to switch between desktop and mobile widths before checking the visible result.
 - When a destructive action opens a native browser confirmation dialog, use `accept dialog` or `dismiss dialog` explicitly instead of assuming the page will continue.
 - When using `--ensure-cdp`, prefer the default temporary profile unless the task explicitly needs a persistent browser state. Use `--reuse-chrome-profile` only when persistence is intentional.
 - Use `--show-tool-schemas` when MCP tool argument behavior changes or needs confirmation.
@@ -41,6 +42,7 @@ Use the bundled runner script for browser-driven validation.
 - `node chrome-devtools-runner.js --ensure-cdp "new tab https://example.com then list tabs then switch tab 1 then read page"`
 - `node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then 画面を確認して"`
 - `node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then click Dashboard then back then forward then reload then read page"`
+- `node chrome-devtools-runner.js --ensure-cdp "set viewport mobile then open http://localhost:3000 then read viewport then read page"`
 
 ## Resources
 
