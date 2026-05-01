@@ -5,10 +5,11 @@
  *
  * Usage:
  *   node chrome-devtools-runner.js "open https://example.com"
- *   node chrome-devtools-runner.js "click #login"
- *   node chrome-devtools-runner.js "type #email test@example.com"
+ *   node chrome-devtools-runner.js "click Login"
+ *   node chrome-devtools-runner.js "type Email test@example.com"
+ *   node chrome-devtools-runner.js "submit"
  *   node chrome-devtools-runner.js --debug "open https://example.com then title"
- *   node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000"
+ *   node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then click Dashboard then back then forward"
  *   node chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "title"
  *
  * Notes:
@@ -578,6 +579,37 @@ class ChromeMcpCli {
             return {type: 'open', url: normalizeUrl(openJaMatch[1])};
         }
 
+        const backMatch = segment.match(/^(?:back|go\s+back|history\s+back|navigate\s+back)$/i);
+        if (backMatch || /^(?:戻る|戻って|前のページへ|前のページに戻って)$/i.test(segment)) {
+            return {type: 'history-back'};
+        }
+
+        const forwardMatch = segment.match(/^(?:forward|go\s+forward|history\s+forward|navigate\s+forward)$/i);
+        if (forwardMatch || /^(?:進む|進んで|次のページへ|次のページに進んで)$/i.test(segment)) {
+            return {type: 'history-forward'};
+        }
+
+        const reloadMatch = segment.match(/^(?:reload|refresh|reload\s+page|refresh\s+page)$/i);
+        if (reloadMatch || /^(?:再読み込み|更新|再読み込みして|更新して)$/i.test(segment)) {
+            return {type: 'reload'};
+        }
+
+        const submitMatch = segment.match(/^(?:submit|submit\s+form|form\s+submit)(?:\s+(.+))?$/i);
+        if (submitMatch) {
+            return {
+                type: 'submit',
+                target: submitMatch[1] ? stripWrappingQuotes(submitMatch[1].trim()) : 'current',
+            };
+        }
+
+        const submitJaMatch = segment.match(/^(?:(.+?)\s*)?(?:を)?(?:送信|送信して|フォーム送信)$/i);
+        if (submitJaMatch) {
+            return {
+                type: 'submit',
+                target: submitJaMatch[1] ? stripWrappingQuotes(submitJaMatch[1].trim()) : 'current',
+            };
+        }
+
         const pressMatch = segment.match(/^(?:press|key)\s+(.+)$/i);
         if (pressMatch) {
             return {type: 'press', key: stripWrappingQuotes(pressMatch[1].trim())};
@@ -746,12 +778,20 @@ class ChromeMcpCli {
                 return this.closeTab(action.target);
             case 'open':
                 return this.openPage(action.url);
+            case 'history-back':
+                return this.navigateHistory('back');
+            case 'history-forward':
+                return this.navigateHistory('forward');
+            case 'reload':
+                return this.reloadPage();
             case 'click':
                 return this.clickSelector(action.selector);
             case 'type':
                 return this.typeIntoSelector(action.selector, action.text);
             case 'type-active':
                 return this.typeIntoActiveElement(action.text);
+            case 'submit':
+                return this.submitForm(action.target);
             case 'title':
                 return this.getTitle();
             case 'wait':
@@ -857,6 +897,37 @@ class ChromeMcpCli {
         return `Opened ${url}`;
     }
 
+    async navigateHistory(direction) {
+        const tool = this.requireTool('evaluate_script');
+        const before = await this.safeGetCurrentPageState();
+        const script = direction === 'back'
+            ? '() => { history.back(); return location.href; }'
+            : '() => { history.forward(); return location.href; }';
+
+        await this.client.callTool(tool, {function: script});
+        this.latestSnapshot = null;
+
+        try {
+            await this.waitForCondition(2000, async () => {
+                const page = await this.safeGetCurrentPageState();
+                return page.url && before.url && page.url !== before.url;
+            }, `Timed out waiting for history ${direction}.`);
+        } catch (_) {
+            // History navigation can keep the same URL on some apps. Treat the request as successful.
+        }
+
+        return `History ${direction} requested`;
+    }
+
+    async reloadPage() {
+        const tool = this.requireTool('evaluate_script');
+        await this.client.callTool(tool, {
+            function: '() => { location.reload(); return location.href; }',
+        });
+        this.latestSnapshot = null;
+        return 'Reloaded current page';
+    }
+
     async openNewTab(url) {
         const tool = this.requireTool('new_page');
         const previousPages = this.hasTool('list_pages') ? await this.listPages().catch(() => []) : [];
@@ -945,6 +1016,61 @@ class ChromeMcpCli {
 
         this.latestSnapshot = null;
         return `Typed into active element: ${maskValueForLog('active-element', text)}`;
+    }
+
+    async submitForm(target = 'current') {
+        const tool = this.requireTool('evaluate_script');
+        const targetLiteral = JSON.stringify(String(target || 'current'));
+        const result = await this.client.callTool(tool, {
+            function: `() => {
+                const target = ${targetLiteral};
+                const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                let form = null;
+
+                if (target && !/^current$/i.test(target)) {
+                    try {
+                        const element = document.querySelector(target);
+                        if (element) {
+                            form = element.tagName === 'FORM' ? element : element.closest('form');
+                        }
+                    } catch (error) {
+                        return { ok: false, error: String(error && error.message ? error.message : error) };
+                    }
+                }
+
+                if (!form) {
+                    const active = document.activeElement;
+                    if (active && typeof active.closest === 'function') {
+                        form = active.closest('form');
+                    }
+                }
+
+                if (!form) {
+                    form = document.querySelector('form');
+                }
+
+                if (!form) {
+                    return { ok: false, error: 'Form not found', target };
+                }
+
+                if (typeof form.requestSubmit === 'function') {
+                    form.requestSubmit();
+                } else {
+                    form.submit();
+                }
+
+                return { ok: true, target, formTag: form.tagName, action: normalize(form.action || location.href) };
+            }`,
+        });
+
+        this.latestSnapshot = null;
+        const payload = unwrapToolResult(result);
+        if (!payload || payload.ok !== true) {
+            throw new Error(`Submit failed for target "${target}"`);
+        }
+
+        const formTag = payload.formTag || 'FORM';
+        return `Submitted ${formTag}${target && !/^current$/i.test(String(target)) ? ` (${target})` : ''}`;
     }
 
     async getTitle() {
@@ -2418,13 +2544,13 @@ function renderUsage() {
         'Usage: node chrome-devtools-runner.js [options] "<instruction>"',
         '',
         'Default mode: let chrome-devtools-mcp start/manage Chrome.',
-        '  node chrome-devtools-runner.js "open https://example.com then title"',
+        '  node chrome-devtools-runner.js "open https://example.com then click Login then submit then read page"',
         '',
         'CDP mode: connect to an existing Chrome DevTools Protocol endpoint.',
         '  node chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "title"',
         '',
         'Managed CDP mode: start Chrome with CDP if the endpoint is not running.',
-        '  node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000"',
+        '  node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then click Dashboard then reload then read page"',
         '',
         'Options:',
         '  --debug',

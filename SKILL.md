@@ -24,14 +24,15 @@ Use the bundled runner script for browser-driven validation.
 
 ## Preferred usage
 
-- Use high-level actions such as `open`, `new tab`, `list tabs`, `switch tab`, `close tab`, `click`, `type`, `wait`, `wait url`, `wait text gone`, `expect text`, `expect url`, `expect title`, `read page`, `snapshot`, `accept dialog`, and `dismiss dialog`.
+- Use high-level actions such as `open`, `new tab`, `list tabs`, `switch tab`, `close tab`, `click`, `type`, `submit`, `back`, `forward`, `reload`, `wait`, `wait url`, `wait text gone`, `expect text`, `expect url`, `expect title`, `read page`, `snapshot`, `accept dialog`, and `dismiss dialog`.
 - Prefer user-visible labels over CSS selectors where possible.
 - For web-app checks, verify both action success and visible outcome.
 - When a flow is asynchronous, add `wait` and `expect` steps instead of relying on timing assumptions.
-- When a request only says "confirm in browser" or similar, default to `open`, `read page`, `click`, `type`, `wait`, `expect`, and finish with a short user-visible summary.
+- When a request only says "confirm in browser" or similar, default to `open`, `read page`, `click`, `type`, `submit`, `back`, `forward`, `reload`, `wait`, `expect`, and finish with a short user-visible summary.
 - When a destructive action opens a native browser confirmation dialog, use `accept dialog` or `dismiss dialog` explicitly instead of assuming the page will continue.
 - When using `--ensure-cdp`, prefer the default temporary profile unless the task explicitly needs a persistent browser state. Use `--reuse-chrome-profile` only when persistence is intentional.
 - Use `--show-tool-schemas` when MCP tool argument behavior changes or needs confirmation.
+- Treat `open` as the entry point for initial pages and direct-link/deep-link checks. For normal in-app navigation, prefer clicking links/buttons, submitting forms, and using browser history actions.
 
 ## Examples
 
@@ -39,6 +40,7 @@ Use the bundled runner script for browser-driven validation.
 - `node chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "open http://localhost:3000/admin then snapshot"`
 - `node chrome-devtools-runner.js --ensure-cdp "new tab https://example.com then list tabs then switch tab 1 then read page"`
 - `node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then 画面を確認して"`
+- `node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then click Dashboard then back then forward then reload then read page"`
 
 ## Resources
 
