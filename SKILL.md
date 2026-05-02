@@ -30,6 +30,7 @@ Use the bundled runner script for browser-driven validation.
 - When a flow is asynchronous, add `wait` and `expect` steps instead of relying on timing assumptions.
 - When a request only says "confirm in browser" or similar, default to `open`, `read page`, `click`, `type`, `submit`, `back`, `forward`, `reload`, `wait`, `expect`, and finish with a short user-visible summary.
 - When verifying responsive layouts, use `set viewport` and `read viewport` to switch between desktop and mobile widths before checking the visible result.
+- `set viewport` is session-level state: after switching or opening tabs, the runner reapplies the last viewport so mobile checks stay stable across navigation.
 - When a destructive action opens a native browser confirmation dialog, use `accept dialog` or `dismiss dialog` explicitly instead of assuming the page will continue.
 - When using `--ensure-cdp`, prefer the default temporary profile unless the task explicitly needs a persistent browser state. Use `--reuse-chrome-profile` only when persistence is intentional.
 - Use `--show-tool-schemas` when MCP tool argument behavior changes or needs confirmation.

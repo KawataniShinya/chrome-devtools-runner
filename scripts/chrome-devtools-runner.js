@@ -461,6 +461,7 @@ class ChromeMcpCli {
         this.latestSnapshot = null;
         this.currentPageId = null;
         this.currentPageIndex = null;
+        this.currentViewport = null;
 
         for (const tool of client.tools) {
             this.toolsByName.set(tool.name, tool);
@@ -845,7 +846,7 @@ class ChromeMcpCli {
         const listPagesTool = this.hasTool('list_pages') ? 'list_pages' : null;
         const navigateTool = this.hasTool('navigate_page') ? 'navigate_page' : null;
         const selectPageTool = this.hasTool('select_page') ? 'select_page' : null;
-        const newPageTool = this.requireTool('new_page');
+        const evalTool = this.hasTool('evaluate_script') ? 'evaluate_script' : null;
 
         if (navigateTool && selectPageTool && this.currentPageId !== null) {
             try {
@@ -856,6 +857,9 @@ class ChromeMcpCli {
                 });
                 this.latestSnapshot = null;
                 await this.syncCurrentPageId(url, {preferSelected: true});
+                await this.autoSelectPageContext().catch(error => {
+                    this.logDebug('failed to auto-select page after navigation:', error.message);
+                });
                 return `Opened ${url}`;
             } catch (error) {
                 this.logDebug('navigate_page on current tab failed, attempting fallback:', error.message);
@@ -878,6 +882,9 @@ class ChromeMcpCli {
                     });
                     this.latestSnapshot = null;
                     await this.syncCurrentPageId(url, {preferSelected: true});
+                    await this.autoSelectPageContext().catch(error => {
+                        this.logDebug('failed to auto-select page after reusable navigation:', error.message);
+                    });
                     return `Opened ${url}`;
                 } catch (error) {
                     this.logDebug('navigate_page on reusable tab failed, falling back:', error.message);
@@ -893,27 +900,33 @@ class ChromeMcpCli {
                 });
                 this.latestSnapshot = null;
                 await this.syncCurrentPageId(url, {preferSelected: true});
+                await this.autoSelectPageContext().catch(error => {
+                    this.logDebug('failed to auto-select page after direct navigation:', error.message);
+                });
                 return `Opened ${url}`;
             } catch (error) {
-                this.logDebug('navigate_page without explicit tab selection failed, falling back to new_page:', error.message);
+                this.logDebug('navigate_page without explicit tab selection failed, attempting in-page navigation:', error.message);
             }
         }
 
-        await this.client.callTool(newPageTool, {url});
-        this.latestSnapshot = null;
-
-        if (listPagesTool && selectPageTool) {
-            const pages = await this.listPages();
-            const openedPage = chooseReusablePage(pages, {targetUrl: url});
-            if (openedPage) {
-                await this.selectPage(openedPage.pageId).catch(error => {
-                    this.logDebug('failed to select newly opened page:', error.message);
+        if (evalTool) {
+            try {
+                await this.ensureSelectedPageContext();
+                await this.client.callTool(evalTool, {
+                    function: `() => { location.href = ${JSON.stringify(url)}; return location.href; }`,
                 });
+                this.latestSnapshot = null;
+                await this.syncCurrentPageId(url, {preferSelected: true});
+                await this.autoSelectPageContext().catch(error => {
+                    this.logDebug('failed to auto-select page after eval navigation:', error.message);
+                });
+                return `Opened ${url}`;
+            } catch (error) {
+                this.logDebug('in-page navigation failed:', error.message);
             }
         }
 
-        await this.syncCurrentPageId(url, {preferSelected: true});
-        return `Opened ${url}`;
+        throw new Error(`Unable to open ${url} in the current tab. No safe navigation path was available.`);
     }
 
     async navigateHistory(direction) {
@@ -953,6 +966,9 @@ class ChromeMcpCli {
         await this.client.callTool(tool, {url});
         this.latestSnapshot = null;
         await this.syncCurrentPageId(url, {preferSelected: true, previousPages});
+        await this.autoSelectPageContext().catch(error => {
+            this.logDebug('failed to auto-select page after opening new tab:', error.message);
+        });
         return `Opened new tab ${url}`;
     }
 
@@ -1223,6 +1239,7 @@ class ChromeMcpCli {
                 payload.networkConditions = viewport.networkConditions;
             }
             await this.client.callTool(toolName, payload);
+            this.currentViewport = viewport;
             this.latestSnapshot = null;
             return `Viewport set to ${viewport.label}`;
         }
@@ -1232,11 +1249,48 @@ class ChromeMcpCli {
                 width: viewport.width,
                 height: viewport.height,
             });
+            this.currentViewport = viewport;
             this.latestSnapshot = null;
             return `Viewport resized to ${viewport.width}x${viewport.height}`;
         }
 
         throw new Error('Viewport tools are unavailable.');
+    }
+
+    async reapplyViewportPreference() {
+        if (!this.currentViewport) {
+            return;
+        }
+
+        const viewport = this.currentViewport;
+        const toolName = this.hasTool('emulate') ? 'emulate' : null;
+        const resizeTool = this.hasTool('resize_page') ? 'resize_page' : null;
+
+        if (toolName) {
+            const payload = {};
+            if (viewport.emulateValue) {
+                payload.viewport = viewport.emulateValue;
+            }
+            if (viewport.userAgent) {
+                payload.userAgent = viewport.userAgent;
+            }
+            if (viewport.colorScheme) {
+                payload.colorScheme = viewport.colorScheme;
+            }
+            if (viewport.networkConditions) {
+                payload.networkConditions = viewport.networkConditions;
+            }
+
+            await this.client.callTool(toolName, payload);
+            return;
+        }
+
+        if (resizeTool) {
+            await this.client.callTool(resizeTool, {
+                width: viewport.width,
+                height: viewport.height,
+            });
+        }
     }
 
     async readViewport() {
@@ -1583,6 +1637,9 @@ class ChromeMcpCli {
         await this.client.callTool(tool, payload);
         this.currentPageId = payload.pageId ?? null;
         this.currentPageIndex = target && typeof target === 'object' && Number.isInteger(target.index) ? target.index : null;
+        await this.reapplyViewportPreference().catch(error => {
+            this.logDebug('failed to reapply viewport preference:', error.message);
+        });
     }
 
     async switchTab(target) {
@@ -2527,6 +2584,7 @@ async function waitForCdp(browserUrl, timeoutMs, child = null, logFile = null) {
     const startedAt = Date.now();
     let lastError = null;
     let launchExit = null;
+    let stableSince = null;
 
     if (child) {
         child.once('exit', (code, signal) => {
@@ -2536,15 +2594,27 @@ async function waitForCdp(browserUrl, timeoutMs, child = null, logFile = null) {
 
     while (Date.now() - startedAt < timeoutMs) {
         try {
-            await getCdpVersion(browserUrl);
-            return;
+            const version = await getCdpVersion(browserUrl);
+            if (!stableSince) {
+                stableSince = Date.now();
+                await delay(250);
+                continue;
+            }
+
+            if (Date.now() - stableSince >= 250) {
+                if (!version || typeof version !== 'object' || !version.webSocketDebuggerUrl) {
+                    throw new Error('CDP version response missing webSocketDebuggerUrl');
+                }
+                return;
+            }
         } catch (error) {
             lastError = error;
+            stableSince = null;
             if (launchExit) {
                 const logHint = logFile ? ` See ${logFile}` : '';
                 throw new Error(`Chrome exited before CDP became available (code=${launchExit.code}, signal=${launchExit.signal}).${logHint}`);
             }
-            await delay(250);
+            await delay(200);
         }
     }
 

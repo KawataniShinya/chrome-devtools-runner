@@ -124,6 +124,7 @@ node chrome-devtools-runner.js --ensure-cdp \
 
 既定では、起動ごとに一時 Chrome profile を作成します。これにより、古い lock ファイルや過去セッションのブラウザ状態が現在の確認作業に混入するのを避けられます。
 Chrome の起動は指定した実行ファイルを直接使います。macOS の `open -n -a` による救済起動は使わないため、`--chrome-path` は実際に実行できる Chrome バイナリを指すようにしてください。
+`set viewport` で指定した画面幅は、タブ移動や新規タブ作成後にも再適用されます。モバイル確認では先に viewport を切り替え、そのまま画面操作を進めてください。
 
 ### 既存 CDP Chrome への接続
 
