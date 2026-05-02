@@ -2476,55 +2476,24 @@ async function ensureCdp(options) {
     if (!chromePath) {
         throw new Error('Chrome executable path is required. Pass --chrome-path or set CHROME_PATH.');
     }
+    ensureChromeExecutable(chromePath);
 
     const cdpPort = browserUrlPort(options.browserUrl) || options.cdpPort;
-    try {
-        const child = launchChromeForCdp({
-            chromePath,
-            cdpPort,
-            userDataDir: options.chromeUserDataDir,
-            logFile: options.chromeLogFile,
-        });
+    const child = launchChromeForCdp({
+        chromePath,
+        cdpPort,
+        userDataDir: options.chromeUserDataDir,
+        logFile: options.chromeLogFile,
+    });
 
-        console.error(`[cdp] starting Chrome pid=${child.pid} port=${cdpPort} userDataDir=${options.chromeUserDataDir}`);
-        await waitForCdp(options.browserUrl, options.cdpStartupTimeoutMs, child, options.chromeLogFile);
-    } catch (error) {
-        if (process.platform !== 'darwin') {
-            throw error;
-        }
-
-        console.error('[cdp] direct Chrome launch failed, retrying via open -n -a Google Chrome');
-        const fallbackChild = launchChromeForCdpViaOpen({
-            cdpPort,
-            userDataDir: options.chromeUserDataDir,
-            logFile: options.chromeLogFile,
-        });
-        await waitForCdp(options.browserUrl, options.cdpStartupTimeoutMs, fallbackChild, options.chromeLogFile);
-    }
+    console.error(`[cdp] starting Chrome pid=${child.pid} port=${cdpPort} userDataDir=${options.chromeUserDataDir}`);
+    await waitForCdp(options.browserUrl, options.cdpStartupTimeoutMs, child, options.chromeLogFile);
 }
 
 function launchChromeForCdp(options) {
     const args = buildChromeLaunchArgs(options);
     const stdio = buildChromeStdio(options.logFile);
     const child = spawn(options.chromePath, args, {
-        detached: true,
-        stdio,
-    });
-
-    child.unref();
-    return child;
-}
-
-function launchChromeForCdpViaOpen(options) {
-    const args = [
-        '-n',
-        '-a',
-        'Google Chrome',
-        '--args',
-        ...buildChromeLaunchArgs(options),
-    ];
-    const stdio = buildChromeStdio(options.logFile);
-    const child = spawn('open', args, {
         detached: true,
         stdio,
     });
@@ -2655,6 +2624,18 @@ function defaultChromePath() {
     }
 
     return null;
+}
+
+function ensureChromeExecutable(chromePath) {
+    if (!fs.existsSync(chromePath)) {
+        throw new Error(`Chrome executable was not found at ${chromePath}. Pass --chrome-path explicitly or set CHROME_PATH.`);
+    }
+
+    try {
+        fs.accessSync(chromePath, fs.constants.X_OK);
+    } catch {
+        throw new Error(`Chrome executable is not runnable at ${chromePath}. Check file permissions or pass a different --chrome-path.`);
+    }
 }
 
 function ensureParentDir(directory) {
