@@ -2544,7 +2544,7 @@ async function ensureCdp(options) {
     });
 
     console.error(`[cdp] starting Chrome pid=${child.pid} port=${cdpPort} userDataDir=${options.chromeUserDataDir}`);
-    await waitForCdp(options.browserUrl, options.cdpStartupTimeoutMs, child, options.chromeLogFile);
+    await waitForCdp(options.browserUrl, options.cdpStartupTimeoutMs, child, options.chromeLogFile, chromePath);
 }
 
 function launchChromeForCdp(options) {
@@ -2580,7 +2580,7 @@ function buildChromeStdio(logFile) {
     return ['ignore', fd, fd];
 }
 
-async function waitForCdp(browserUrl, timeoutMs, child = null, logFile = null) {
+async function waitForCdp(browserUrl, timeoutMs, child = null, logFile = null, chromePath = null) {
     const startedAt = Date.now();
     let lastError = null;
     let launchExit = null;
@@ -2611,8 +2611,12 @@ async function waitForCdp(browserUrl, timeoutMs, child = null, logFile = null) {
             lastError = error;
             stableSince = null;
             if (launchExit) {
-                const logHint = logFile ? ` See ${logFile}` : '';
-                throw new Error(`Chrome exited before CDP became available (code=${launchExit.code}, signal=${launchExit.signal}).${logHint}`);
+                throw new Error(formatChromeStartupFailure({
+                    code: launchExit.code,
+                    signal: launchExit.signal,
+                    logFile,
+                    chromePath,
+                }));
             }
             await delay(200);
         }
@@ -2620,6 +2624,18 @@ async function waitForCdp(browserUrl, timeoutMs, child = null, logFile = null) {
 
     const logHint = logFile ? ` See ${logFile}` : '';
     throw new Error(`Timed out waiting for Chrome DevTools Protocol at ${browserUrl}: ${lastError ? lastError.message : 'not available'}.${logHint}`);
+}
+
+function formatChromeStartupFailure({code, signal, logFile, chromePath}) {
+    const parts = [`Chrome exited before CDP became available (code=${code}, signal=${signal}).`];
+    if (chromePath) {
+        parts.push(`Chrome path: ${chromePath}.`);
+    }
+    if (logFile) {
+        parts.push(`See ${logFile}.`);
+    }
+    parts.push('Verify that the Chrome binary is runnable and that no local Chrome profile, permission, or crash-reporting issue is preventing startup.');
+    return parts.join(' ');
 }
 
 async function isCdpAvailable(browserUrl) {

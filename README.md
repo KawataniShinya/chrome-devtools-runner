@@ -291,7 +291,7 @@ node chrome-devtools-runner.js --ensure-cdp \
 
 ### `--ensure-cdp` で Chrome が起動しない
 
-runner は Chrome プロセス状態とログファイルの場所を表示します。
+runner は Chrome プロセス状態、Chrome の実行パス、ログファイルの場所を表示します。
 
 ```text
 [cdp] starting Chrome pid=12345 port=9222 userDataDir=/tmp/chrome-devtools-runner-abc123
