@@ -19,7 +19,7 @@
  * - Use --browser-url to connect to a running Chrome DevTools Protocol endpoint.
  * - Use --ensure-cdp to start Chrome with CDP when the endpoint is not running.
  * - Override the server command with MCP_SERVER_COMMAND if needed.
- *   Default: npx -y chrome-devtools-mcp@latest
+ *   Default: locally installed, package-lock.json-pinned chrome-devtools-mcp
  */
 
 const fs = require('node:fs');
@@ -28,8 +28,6 @@ const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
 
-const BASE_SERVER_COMMAND = 'npx -y chrome-devtools-mcp@latest';
-const DEFAULT_SERVER_COMMAND = process.env.MCP_SERVER_COMMAND || BASE_SERVER_COMMAND;
 const DEFAULT_PROTOCOL_VERSION = '2025-03-26';
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10000;
@@ -244,7 +242,7 @@ function takeOptionValue(inlineValue, args) {
 
 class McpStdioClient {
     constructor(options = {}) {
-        this.command = options.command || DEFAULT_SERVER_COMMAND;
+        this.command = options.command || process.env.MCP_SERVER_COMMAND || null;
         this.debug = Boolean(options.debug);
         this.timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
         this.child = null;
@@ -264,6 +262,7 @@ class McpStdioClient {
     }
 
     async start() {
+        this.command ||= buildServerCommand({});
         this.logDebug('starting MCP server');
         this.child = spawn(this.command, {
             shell: true,
@@ -2574,6 +2573,8 @@ async function prepareRuntime(options) {
         runtime.browserUrl = normalizeBrowserUrl(runtime.browserUrl);
     }
 
+    runtime.serverCommand = buildServerCommand(runtime);
+
     if (runtime.ensureCdp) {
         runtime.chromeUserDataDir = resolveChromeUserDataDir(runtime);
     }
@@ -2582,7 +2583,6 @@ async function prepareRuntime(options) {
         await ensureCdp(runtime);
     }
 
-    runtime.serverCommand = buildServerCommand(runtime);
     return runtime;
 }
 
@@ -2598,8 +2598,24 @@ function resolveChromeUserDataDir(options) {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-devtools-runner-'));
 }
 
-function buildServerCommand(options) {
-    let command = options.serverCommand || BASE_SERVER_COMMAND;
+function buildServerCommand(options = {}) {
+    let command = options.serverCommand || process.env.MCP_SERVER_COMMAND;
+    if (!command) {
+        const skillDirectory = path.resolve(__dirname, '..');
+        const expectedVersion = require('../package.json').dependencies['chrome-devtools-mcp'];
+        const packageDirectory = path.join(skillDirectory, 'node_modules', 'chrome-devtools-mcp');
+        const entryPoint = path.join(packageDirectory, 'build/src/bin/chrome-devtools-mcp.js');
+        let installedVersion;
+        try {
+            installedVersion = JSON.parse(fs.readFileSync(path.join(packageDirectory, 'package.json'), 'utf8')).version;
+        } catch {
+            // Report a setup instruction rather than silently downloading a different version.
+        }
+        if (installedVersion !== expectedVersion || !fs.existsSync(entryPoint)) {
+            throw new Error(`Pinned chrome-devtools-mcp ${expectedVersion} is not installed. Run npm ci --ignore-scripts in ${skillDirectory}.`);
+        }
+        command = `${quoteShellArg(process.execPath)} ${quoteShellArg(entryPoint)}`;
+    }
 
     if (options.browserUrl && !/\s--browser-?url(?:=|\s)|\s--browserUrl(?:=|\s)/.test(` ${command} `)) {
         command += ` --browserUrl ${quoteShellArg(options.browserUrl)}`;
@@ -3011,4 +3027,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = {ChromeMcpCli, McpStdioClient, parseArgs, splitInstructions, redactOutput, rememberInput};
+module.exports = {ChromeMcpCli, McpStdioClient, parseArgs, splitInstructions, redactOutput, rememberInput, buildServerCommand};
