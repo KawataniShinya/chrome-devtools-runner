@@ -38,9 +38,30 @@ const DEFAULT_CDP_PORT = 9222;
 const DEFAULT_CDP_STARTUP_TIMEOUT_MS = 10000;
 const DEFAULT_CHROME_LOG_FILE = path.join(os.tmpdir(), 'chrome-devtools-runner.chrome.log');
 
+const privateInputs = new Set();
+
+function rememberInput(value) {
+    if (typeof value !== 'string' || value.length === 0) return;
+    for (const variant of [value, JSON.stringify(value).slice(1, -1), encodeURIComponent(value), value.toLowerCase(), value.replace(/\s+/g, ' ').trim().toLowerCase()]) {
+        if (variant) privateInputs.add(variant);
+    }
+}
+
+function redactOutput(value) {
+    let text = typeof value === 'string' ? value : JSON.stringify(value);
+    if (text === undefined) return '';
+    for (const secret of [...privateInputs].sort((a, b) => b.length - a.length)) text = text.split(secret).join('[REDACTED]');
+    return text;
+}
+
+function writeOutput(level, ...values) {
+    console[level](...values.map(redactOutput));
+}
+
 function parseArgs(argv) {
     const args = [...argv];
     let debug = false;
+    let stdin = false;
     let showTools = false;
     let showToolSchemas = false;
     let timeoutMs = DEFAULT_TIMEOUT_MS;
@@ -59,6 +80,11 @@ function parseArgs(argv) {
     while (args.length > 0) {
         const rawValue = args.shift();
         const {name: value, inlineValue} = splitOption(rawValue);
+
+        if (value === '--stdin') {
+            stdin = true;
+            continue;
+        }
 
         if (value === '--debug') {
             debug = true;
@@ -135,6 +161,7 @@ function parseArgs(argv) {
 
     return {
         debug,
+        stdin,
         showTools,
         showToolSchemas,
         timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS,
@@ -195,12 +222,12 @@ class McpStdioClient {
 
     logDebug(...args) {
         if (this.debug) {
-            console.error('[debug]', ...args);
+            writeOutput('error', '[debug]', ...args);
         }
     }
 
     async start() {
-        this.logDebug('starting MCP server:', this.command);
+        this.logDebug('starting MCP server');
         this.child = spawn(this.command, {
             shell: true,
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -215,7 +242,7 @@ class McpStdioClient {
         this.child.stderr.on('data', chunk => {
             const text = chunk.toString('utf8').trim();
             if (text) {
-                console.error('[mcp-server]', text);
+                this.logDebug('MCP server stderr received (content omitted)');
             }
         });
 
@@ -278,15 +305,15 @@ class McpStdioClient {
         try {
             message = JSON.parse(payload);
         } catch (error) {
-            this.logDebug('failed to parse message:', payload);
-            throw error;
+            this.logDebug('failed to parse MCP message (payload omitted)');
+            throw new Error('Invalid JSON response from MCP server (payload omitted)');
         }
 
         this.handleMessage(message);
     }
 
     handleMessage(message) {
-        this.logDebug('recv', JSON.stringify(message));
+        this.logDebug('recv', {id: message.id, method: message.method, isError: Boolean(message.error || message.result?.isError)});
 
         if (Object.prototype.hasOwnProperty.call(message, 'id') && this.pending.has(message.id)) {
             const pending = this.pending.get(message.id);
@@ -320,7 +347,7 @@ class McpStdioClient {
 
     writeMessage(message) {
         const json = JSON.stringify(message);
-        this.logDebug('send', json);
+        this.logDebug('send', {id: message.id, method: message.method, tool: message.params?.name});
         this.child.stdin.write(`${json}\n`);
     }
 
@@ -474,7 +501,7 @@ class ChromeMcpCli {
 
     logDebug(...args) {
         if (this.debug) {
-            console.error('[debug]', ...args);
+            writeOutput('error', '[debug]', ...args);
         }
     }
 
@@ -517,10 +544,7 @@ class ChromeMcpCli {
             throw new Error('Instruction is required.');
         }
 
-        const segments = normalized
-            .split(/\s+(?:then|and)\s+|[\n、]+/i)
-            .map(segment => segment.trim())
-            .filter(Boolean);
+        const segments = splitInstructions(normalized);
 
         const actions = [];
         for (const segment of segments) {
@@ -532,7 +556,7 @@ class ChromeMcpCli {
 
     parseSegment(segment) {
         const titlePattern = /^(?:get\s+)?title$/i;
-        if (titlePattern.test(segment) || /タイトル/.test(segment)) {
+        if (titlePattern.test(segment) || /^タイトル(?:を)?(?:取得して|教えて|表示して|確認して)?$/.test(segment)) {
             return {type: 'title'};
         }
 
@@ -541,18 +565,8 @@ class ChromeMcpCli {
             return {type: 'read-page'};
         }
 
-        const readPageJaMatch = segment.match(/^(?:ページ|画面|ブラウザ)(?:を)?(?:確認して|確認|見て|読んで)$/);
-        if (readPageJaMatch) {
-            return {type: 'read-page'};
-        }
-
         const listTabsMatch = segment.match(/^(?:list(?:-tabs|\s+tabs)|tabs)$/i);
         if (listTabsMatch) {
-            return {type: 'list-tabs'};
-        }
-
-        const listTabsJaMatch = segment.match(/^タブ(?:一覧)?(?:を)?(?:確認して|表示して|見せて)?$/);
-        if (listTabsJaMatch) {
             return {type: 'list-tabs'};
         }
 
@@ -561,19 +575,9 @@ class ChromeMcpCli {
             return {type: 'new-tab', url: normalizeUrl(newTabMatch[1])};
         }
 
-        const newTabJaMatch = segment.match(/^(.+?)\s*(?:を)?新しいタブで(?:開いて|表示して)$/);
-        if (newTabJaMatch && looksLikeUrlOrPath(newTabJaMatch[1])) {
-            return {type: 'new-tab', url: normalizeUrl(newTabJaMatch[1])};
-        }
-
         const switchTabMatch = segment.match(/^(?:switch-tab|switch\s+tab|select-tab|select\s+tab)\s+(.+)$/i);
         if (switchTabMatch) {
             return {type: 'switch-tab', target: stripWrappingQuotes(switchTabMatch[1].trim())};
-        }
-
-        const switchTabJaMatch = segment.match(/^(.+?)\s*(?:タブ)?に切り替えて$/);
-        if (switchTabJaMatch) {
-            return {type: 'switch-tab', target: stripWrappingQuotes(switchTabJaMatch[1].trim())};
         }
 
         const closeTabMatch = segment.match(/^(?:close-tab|close\s+tab)(?:\s+(.+))?$/i);
@@ -581,19 +585,9 @@ class ChromeMcpCli {
             return {type: 'close-tab', target: closeTabMatch[1] ? stripWrappingQuotes(closeTabMatch[1].trim()) : 'current'};
         }
 
-        const closeTabJaMatch = segment.match(/^(?:(.+?)\s*(?:タブ)?を)?閉じて$/);
-        if (closeTabJaMatch) {
-            return {type: 'close-tab', target: closeTabJaMatch[1] ? stripWrappingQuotes(closeTabJaMatch[1].trim()) : 'current'};
-        }
-
         const openMatch = segment.match(/^(?:open|goto|go\s+to|navigate|navigate\s+to|visit)\s+(.+)$/i);
         if (openMatch) {
             return {type: 'open', url: normalizeUrl(openMatch[1])};
-        }
-
-        const openJaMatch = segment.match(/^(.+?)\s*(?:を)?(?:開く|開いて|表示して|に移動して)$/);
-        if (openJaMatch && looksLikeUrlOrPath(openJaMatch[1])) {
-            return {type: 'open', url: normalizeUrl(openJaMatch[1])};
         }
 
         const backMatch = segment.match(/^(?:back|go\s+back|history\s+back|navigate\s+back)$/i);
@@ -611,19 +605,11 @@ class ChromeMcpCli {
             return {type: 'reload'};
         }
 
-        const submitMatch = segment.match(/^(?:submit|submit\s+form|form\s+submit)(?:\s+(.+))?$/i);
+        const submitMatch = segment.match(/^(?:submit\s+form|form\s+submit|submit)(?:\s+(.+))?$/i);
         if (submitMatch) {
             return {
                 type: 'submit',
                 target: submitMatch[1] ? stripWrappingQuotes(submitMatch[1].trim()) : 'current',
-            };
-        }
-
-        const submitJaMatch = segment.match(/^(?:(.+?)\s*)?(?:を)?(?:送信|送信して|フォーム送信)$/i);
-        if (submitJaMatch) {
-            return {
-                type: 'submit',
-                target: submitJaMatch[1] ? stripWrappingQuotes(submitJaMatch[1].trim()) : 'current',
             };
         }
 
@@ -634,12 +620,7 @@ class ChromeMcpCli {
 
         const clickMatch = segment.match(/^(?:click|tap)\s+(.+)$/i);
         if (clickMatch) {
-            return {type: 'click', selector: clickMatch[1].trim()};
-        }
-
-        const clickJaMatch = segment.match(/^(.+?)\s*(?:を)?(?:クリック|押して)$/);
-        if (clickJaMatch) {
-            return {type: 'click', selector: clickJaMatch[1].trim()};
+            return {type: 'click', selector: stripWrappingQuotes(clickMatch[1].trim())};
         }
 
         const acceptDialogMatch = segment.match(/^(?:accept\s+dialog|confirm\s+dialog|dialog\s+accept)$/i);
@@ -647,18 +628,8 @@ class ChromeMcpCli {
             return {type: 'dialog', action: 'accept'};
         }
 
-        const acceptDialogJaMatch = segment.match(/^(?:ダイアログを)?(?:承認|許可|確認して|受け入れて|OKして|受け入れる)$/i);
-        if (acceptDialogJaMatch) {
-            return {type: 'dialog', action: 'accept'};
-        }
-
         const dismissDialogMatch = segment.match(/^(?:dismiss\s+dialog|cancel\s+dialog|dialog\s+dismiss)$/i);
         if (dismissDialogMatch) {
-            return {type: 'dialog', action: 'dismiss'};
-        }
-
-        const dismissDialogJaMatch = segment.match(/^(?:ダイアログを)?(?:閉じて|キャンセルして|拒否して|却下して|取り消して|キャンセル)$/i);
-        if (dismissDialogJaMatch) {
             return {type: 'dialog', action: 'dismiss'};
         }
 
@@ -670,19 +641,9 @@ class ChromeMcpCli {
             }
         }
 
-        const waitJaMatch = segment.match(/^(.+?)\s*(?:が表示されるまで待って|を待って)$/);
-        if (waitJaMatch) {
-            return {type: 'wait', text: stripWrappingQuotes(waitJaMatch[1].trim())};
-        }
-
         const waitUrlMatch = segment.match(/^wait(?:\s+for)?\s+url\s+(.+)$/i);
         if (waitUrlMatch) {
             return {type: 'wait-url', value: stripWrappingQuotes(waitUrlMatch[1].trim())};
-        }
-
-        const waitUrlJaMatch = segment.match(/^url\s+(.+?)\s+になるまで待って$/i);
-        if (waitUrlJaMatch) {
-            return {type: 'wait-url', value: stripWrappingQuotes(waitUrlJaMatch[1].trim())};
         }
 
         const waitTextGoneMatch = segment.match(/^wait(?:\s+for)?\s+text(?:\s+gone|\s+to\s+disappear)\s+(.+)$/i);
@@ -693,11 +654,6 @@ class ChromeMcpCli {
         const waitGoneLooseMatch = segment.match(/^wait(?:\s+for)?\s+(.+?)\s+(?:to\s+disappear|to\s+go\s+away)$/i);
         if (waitGoneLooseMatch) {
             return {type: 'wait-text-gone', text: stripWrappingQuotes(waitGoneLooseMatch[1].trim())};
-        }
-
-        const waitGoneJaMatch = segment.match(/^(.+?)\s*(?:が)?消えるまで待って$/);
-        if (waitGoneJaMatch) {
-            return {type: 'wait-text-gone', text: stripWrappingQuotes(waitGoneJaMatch[1].trim())};
         }
 
         const expectTitleMatch = segment.match(/^expect\s+title\s+(.+)$/i);
@@ -730,19 +686,87 @@ class ChromeMcpCli {
             return {type: 'set-viewport', value: stripWrappingQuotes(viewportMatch[1].trim())};
         }
 
-        const viewportJaMatch = segment.match(/^(?:画面幅|画面サイズ|viewport)\s*(.+?)\s*(?:に|へ)?(?:設定して|切り替えて|して)$/i);
-        if (viewportJaMatch) {
-            return {type: 'set-viewport', value: stripWrappingQuotes(viewportJaMatch[1].trim())};
-        }
-
         const evalMatch = segment.match(/^(?:eval|evaluate|js)\s+([\s\S]+)$/i);
         if (evalMatch) {
             return {type: 'eval', script: stripWrappingQuotes(evalMatch[1].trim())};
         }
 
-        const typeMatch = segment.match(/^(?:type|fill|input|enter)\s+(.+)$/i);
+        const typeMatch = segment.match(/^(?:type|fill|input|enter)\s+([\s\S]+)$/i);
         if (typeMatch) {
             return parseTypePayload(typeMatch[1]);
+        }
+
+        const readPageJaMatch = segment.match(/^(?:ページ|画面|ブラウザ)(?:を)?(?:確認して|確認|見て|読んで)$/);
+        if (readPageJaMatch) {
+            return {type: 'read-page'};
+        }
+
+        const listTabsJaMatch = segment.match(/^タブ(?:一覧)?(?:を)?(?:確認して|表示して|見せて)?$/);
+        if (listTabsJaMatch) {
+            return {type: 'list-tabs'};
+        }
+
+        const newTabJaMatch = segment.match(/^(.+?)\s*(?:を)?新しいタブで(?:開いて|表示して)$/);
+        if (newTabJaMatch && looksLikeUrlOrPath(newTabJaMatch[1])) {
+            return {type: 'new-tab', url: normalizeUrl(newTabJaMatch[1])};
+        }
+
+        const switchTabJaMatch = segment.match(/^(.+?)\s*(?:タブ)?に切り替えて$/);
+        if (switchTabJaMatch) {
+            return {type: 'switch-tab', target: stripWrappingQuotes(switchTabJaMatch[1].trim())};
+        }
+
+        const closeTabJaMatch = segment.match(/^(?:(.+?)\s*(?:タブ)?を)?閉じて$/);
+        if (closeTabJaMatch) {
+            return {type: 'close-tab', target: closeTabJaMatch[1] ? stripWrappingQuotes(closeTabJaMatch[1].trim()) : 'current'};
+        }
+
+        const openJaMatch = segment.match(/^(.+?)\s*(?:を)?(?:開く|開いて|表示して|に移動して)$/);
+        if (openJaMatch && looksLikeUrlOrPath(openJaMatch[1])) {
+            return {type: 'open', url: normalizeUrl(openJaMatch[1])};
+        }
+
+        const submitJaMatch = segment.match(/^(?:(.+?)\s*)?(?:を)?(?:送信|送信して|フォーム送信)$/i);
+        if (submitJaMatch) {
+            return {
+                type: 'submit',
+                target: submitJaMatch[1] ? stripWrappingQuotes(submitJaMatch[1].trim()) : 'current',
+            };
+        }
+
+        const clickJaMatch = segment.match(/^(.+?)\s*(?:を)?(?:クリック|押して)$/);
+        if (clickJaMatch) {
+            return {type: 'click', selector: stripWrappingQuotes(clickJaMatch[1].trim())};
+        }
+
+        const acceptDialogJaMatch = segment.match(/^(?:ダイアログを)?(?:承認|許可|確認して|受け入れて|OKして|受け入れる)$/i);
+        if (acceptDialogJaMatch) {
+            return {type: 'dialog', action: 'accept'};
+        }
+
+        const dismissDialogJaMatch = segment.match(/^(?:ダイアログを)?(?:閉じて|キャンセルして|拒否して|却下して|取り消して|キャンセル)$/i);
+        if (dismissDialogJaMatch) {
+            return {type: 'dialog', action: 'dismiss'};
+        }
+
+        const waitJaMatch = segment.match(/^(.+?)\s*(?:が表示されるまで待って|を待って)$/);
+        if (waitJaMatch) {
+            return {type: 'wait', text: stripWrappingQuotes(waitJaMatch[1].trim())};
+        }
+
+        const waitUrlJaMatch = segment.match(/^url\s+(.+?)\s+になるまで待って$/i);
+        if (waitUrlJaMatch) {
+            return {type: 'wait-url', value: stripWrappingQuotes(waitUrlJaMatch[1].trim())};
+        }
+
+        const waitGoneJaMatch = segment.match(/^(.+?)\s*(?:が)?消えるまで待って$/);
+        if (waitGoneJaMatch) {
+            return {type: 'wait-text-gone', text: stripWrappingQuotes(waitGoneJaMatch[1].trim())};
+        }
+
+        const viewportJaMatch = segment.match(/^(?:画面幅|画面サイズ|viewport)\s*(.+?)\s*(?:に|へ)?(?:設定して|切り替えて|して)$/i);
+        if (viewportJaMatch) {
+            return {type: 'set-viewport', value: stripWrappingQuotes(viewportJaMatch[1].trim())};
         }
 
         const typeJaFullMatch = segment.match(/^(.+?)\s+に\s+(.+?)\s+を入力(?:して)?$/);
@@ -762,11 +786,14 @@ class ChromeMcpCli {
             };
         }
 
-        throw new Error(`Unsupported instruction segment: "${segment}"`);
+        throw new Error('Unsupported instruction segment. Check command syntax; input omitted.');
     }
 
     async executeInstruction(instruction) {
         const actions = this.parseInstruction(instruction);
+        for (const action of actions) {
+            if (['type', 'type-active'].includes(action.type)) rememberInput(action.text);
+        }
         const outputs = [];
 
         for (let i = 0; i < actions.length; i += 1) {
@@ -1011,6 +1038,7 @@ class ChromeMcpCli {
     }
 
     async typeIntoSelector(selector, text) {
+        rememberInput(text);
         const resolved = await this.resolveSnapshotTarget(selector, {mode: 'fill'});
         if (resolved && this.hasTool('fill')) {
             await this.callTool('fill', {
@@ -1019,18 +1047,19 @@ class ChromeMcpCli {
                 includeSnapshot: true,
             });
             await this.refreshSnapshot();
-            return `Filled ${resolved.description}: ${maskValueForLog(selector, text)}`;
+            return `Filled ${resolved.description}: [REDACTED]`;
         }
 
         const fallback = await this.typeIntoSelectorWithDom(selector, text);
-        return `Typed into ${fallback}: ${maskValueForLog(selector, text)}`;
+        return `Typed into ${fallback}: [REDACTED]`;
     }
 
     async typeIntoActiveElement(text) {
+        rememberInput(text);
         if (this.hasTool('type_text')) {
             await this.callTool('type_text', {text});
             this.latestSnapshot = null;
-            return `Typed into active element: ${maskValueForLog('active-element', text)}`;
+            return `Typed into active element: [REDACTED]`;
         }
 
         const tool = this.requireTool('evaluate_script');
@@ -1066,7 +1095,7 @@ class ChromeMcpCli {
         }
 
         this.latestSnapshot = null;
-        return `Typed into active element: ${maskValueForLog('active-element', text)}`;
+        return `Typed into active element: [REDACTED]`;
     }
 
     async submitForm(target = 'current') {
@@ -1078,36 +1107,32 @@ class ChromeMcpCli {
                 const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
                 let form = null;
 
-                if (target && !/^current$/i.test(target)) {
+                if (!/^current$/i.test(target)) {
+                    let elements;
                     try {
-                        const element = document.querySelector(target);
-                        if (element) {
-                            form = element.tagName === 'FORM' ? element : element.closest('form');
-                        }
-                    } catch (error) {
-                        return { ok: false, error: String(error && error.message ? error.message : error) };
+                        elements = Array.from(document.querySelectorAll(target));
+                    } catch (_) {
+                        return {ok: false, error: 'Invalid form selector'};
                     }
-                }
-
-                if (!form) {
+                    if (elements.length !== 1) return {ok: false, error: 'Expected exactly one form target'};
+                    const element = elements[0];
+                    form = element.tagName === 'FORM' ? element : element.closest('form');
+                    if (!form) return {ok: false, error: 'Target does not belong to a form'};
+                } else {
                     const active = document.activeElement;
-                    if (active && typeof active.closest === 'function') {
-                        form = active.closest('form');
+                    form = active?.closest('form') || null;
+                    if (!form) {
+                        const forms = Array.from(document.querySelectorAll('form'));
+                        if (forms.length !== 1) return {ok: false, error: 'Specify a unique form target'};
+                        form = forms[0];
                     }
                 }
-
-                if (!form) {
-                    form = document.querySelector('form');
-                }
-
-                if (!form) {
-                    return { ok: false, error: 'Form not found', target };
-                }
+                if (!form.checkValidity()) return {ok: false, error: 'Form validation failed'};
 
                 if (typeof form.requestSubmit === 'function') {
                     form.requestSubmit();
                 } else {
-                    form.submit();
+                    return {ok: false, error: 'requestSubmit is unavailable; click the submit button explicitly'};
                 }
 
                 return { ok: true, target, formTag: form.tagName, action: normalize(form.action || location.href) };
@@ -1117,7 +1142,7 @@ class ChromeMcpCli {
         this.latestSnapshot = null;
         const payload = unwrapToolResult(result);
         if (!payload || payload.ok !== true) {
-            throw new Error(`Submit failed for target "${target}"`);
+            throw new Error(`Submit failed for target "${target}": ${payload?.error || "Unknown error"}`);
         }
 
         const formTag = payload.formTag || 'FORM';
@@ -1334,7 +1359,7 @@ class ChromeMcpCli {
         const page = await this.getCurrentPageState();
         const snapshot = await this.refreshSnapshot();
         const elements = snapshot.elements || parseSnapshotElements(snapshot.text || '');
-        const textPreview = normalizeText(page.text).slice(0, 400);
+        const textPreview = redactOutput(normalizeText(page.text)).slice(0, 400);
 
         return [
             `Page: ${page.title || '(no title)'}`,
@@ -1385,12 +1410,12 @@ class ChromeMcpCli {
         const snapshot = await this.getSnapshot();
         const matches = findSnapshotMatches(snapshot.elements, target, options);
         if (matches.length === 0) {
+            if (parseTargetHints(target).uid) throw new Error('Snapshot UID not found; refresh the snapshot.');
             return null;
         }
 
         if (matches.length > 1 && matches[0].score === matches[1].score) {
-            this.logDebug('snapshot target is ambiguous, falling back to DOM resolution:', target);
-            return null;
+            throw createAmbiguousTargetError(target, matches.filter(match => match.score === matches[0].score));
         }
 
         const best = matches[0].element;
@@ -1411,7 +1436,9 @@ class ChromeMcpCli {
                 let element = null;
 
                 try {
-                    element = document.querySelector(selector);
+                    const cssMatches = Array.from(document.querySelectorAll(selector));
+                    if (cssMatches.length > 1) return {ok: false, error: 'Ambiguous selector; use a unique selector or UID'};
+                    element = cssMatches[0] || null;
                 } catch (_) {
                     element = null;
                 }
@@ -1419,18 +1446,23 @@ class ChromeMcpCli {
                 if (!element) {
                     const targetText = normalize(selector);
                     const candidates = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="submit"], input[type="button"]'));
-                    element = candidates.find((candidate) => {
+                    const matches = candidates.filter((candidate) => {
                         const text = candidate.tagName === 'INPUT'
                             ? normalize(candidate.value)
                             : normalize(candidate.textContent);
                         return text === targetText;
-                    }) || null;
+                    });
+                    if (matches.length > 1) return {ok: false, error: 'Ambiguous label; use a unique selector or UID'};
+                    element = matches[0] || null;
                 }
 
                 if (!element) {
                     return { ok: false, error: 'Element not found', selector };
                 }
 
+                if (element.disabled || element.getAttribute('aria-disabled') === 'true' || element.getClientRects().length === 0) {
+                    return {ok: false, error: 'Target is disabled or not visible'};
+                }
                 element.click();
                 return { ok: true, selector, tagName: element.tagName };
             }`,
@@ -1444,23 +1476,29 @@ class ChromeMcpCli {
 
         const payload = unwrapToolResult(result);
         if (!payload || payload.ok !== true) {
-            throw new Error(`Click failed for selector "${selector}"`);
+            throw new Error(`Click failed for selector "${selector}": ${payload?.error || "Unknown error"}`);
         }
 
         return selector;
     }
 
     async typeIntoSelectorWithDom(selector, text) {
+        rememberInput(text);
         const tool = this.requireTool('evaluate_script');
         const selectorLiteral = JSON.stringify(selector);
         const result = await this.callTool(tool, {
             function: `() => {
                 const selector = ${selectorLiteral};
-                const element = document.querySelector(selector);
+                const matches = Array.from(document.querySelectorAll(selector));
+                if (matches.length !== 1) return {ok: false, error: 'Expected exactly one editable target'};
+                const element = matches[0];
                 if (!element) {
                     return { ok: false, error: 'Element not found', selector };
                 }
 
+                if (element.disabled || element.readOnly || element.getClientRects().length === 0) {
+                    return {ok: false, error: 'Target is disabled, read-only or not visible'};
+                }
                 element.focus();
 
                 if ('value' in element) {
@@ -1481,7 +1519,7 @@ class ChromeMcpCli {
 
         const payload = unwrapToolResult(result);
         if (!payload || payload.ok !== true) {
-            throw new Error(`Type failed for selector "${selector}"`);
+            throw new Error(`Type failed for selector "${selector}": ${payload?.error || "Unknown error"}`);
         }
 
         if (this.hasTool('type_text')) {
@@ -1494,7 +1532,9 @@ class ChromeMcpCli {
             function: `() => {
                 const selector = ${selectorLiteral};
                 const value = ${fallbackTextLiteral};
-                const element = document.querySelector(selector);
+                const matches = Array.from(document.querySelectorAll(selector));
+                if (matches.length !== 1) return {ok: false, error: 'Expected exactly one editable target'};
+                const element = matches[0];
                 if (!element) {
                     return { ok: false, error: 'Element not found', selector };
                 }
@@ -1518,7 +1558,7 @@ class ChromeMcpCli {
 
         const applyPayload = unwrapToolResult(applyResult);
         if (!applyPayload || applyPayload.ok !== true) {
-            throw new Error(`Type failed for selector "${selector}"`);
+            throw new Error(`Type failed for selector "${selector}": ${applyPayload?.error || "Unknown error"}`);
         }
 
         return selector;
@@ -1836,41 +1876,68 @@ class ChromeMcpCli {
     }
 }
 
+// Delimiters inside quoted strings or bracketed expressions are data, not commands.
+function splitInstructions(input) {
+    const segments = [];
+    let buffer = '';
+    let quote = null;
+    let escaped = false;
+    const brackets = [];
+    for (let i = 0; i < input.length; i += 1) {
+        const char = input[i];
+        if (escaped) {
+            buffer += char;
+            escaped = false;
+            continue;
+        }
+        if (char === '\\') {
+            buffer += char;
+            escaped = true;
+            continue;
+        }
+        if (quote) {
+            buffer += char;
+            if (char === quote) quote = null;
+            continue;
+        }
+        if ('"\'`'.includes(char) && (i === 0 || /[\s=([{,:]/.test(input[i - 1]))) {
+            quote = char;
+            buffer += char;
+            continue;
+        }
+        if ('([{'.includes(char)) brackets.push(char);
+        if (')]}'.includes(char)) {
+            const opening = brackets.pop();
+            if (char !== {'(': ')', '[': ']', '{': '}'}[opening]) {
+                throw new Error('Unbalanced brackets in instruction; input omitted.');
+            }
+        }
+        const separator = brackets.length === 0 ? input.slice(i).match(/^(?:\s+(?:then|and)\s+|[\n、]+)/i) : null;
+        if (separator) {
+            if (buffer.trim()) segments.push(buffer.trim());
+            buffer = '';
+            i += separator[0].length - 1;
+        } else {
+            buffer += char;
+        }
+    }
+    if (quote || escaped || brackets.length) throw new Error('Unterminated quote, escape or bracket; input omitted.');
+    if (buffer.trim()) segments.push(buffer.trim());
+    return segments;
+}
+
 function parseTypePayload(payload) {
-    const trimmed = payload.trim();
-
-    const selectorAndQuotedText = trimmed.match(/^(\S+)\s+(".*"|'[^']*')$/);
-    if (selectorAndQuotedText) {
-        return {
-            type: 'type',
-            selector: selectorAndQuotedText[1],
-            text: stripWrappingQuotes(selectorAndQuotedText[2]),
-        };
-    }
-
-    const selectorAndText = trimmed.match(/^(\S+)\s+(.+)$/);
-    if (selectorAndText) {
-        return {
-            type: 'type',
-            selector: selectorAndText[1],
-            text: stripWrappingQuotes(selectorAndText[2].trim()),
-        };
-    }
-
-    return {
-        type: 'type-active',
-        text: stripWrappingQuotes(trimmed),
-    };
+    const match = payload.trim().match(/^("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)(?:\s+([\s\S]+))?$/);
+    if (!match) throw new Error('Invalid type syntax; quote the selector and value separately.');
+    if (match[2] === undefined) return {type: 'type-active', text: stripWrappingQuotes(match[1])};
+    return {type: 'type', selector: stripWrappingQuotes(match[1]), text: stripWrappingQuotes(match[2])};
 }
 
 function stripWrappingQuotes(value) {
-    if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith('\'') && value.endsWith('\''))
-    ) {
-        return value.slice(1, -1);
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        const quote = value[0];
+        return value.slice(1, -1).replace(/\\([\\"'])/g, (match, char) => char === quote || char === '\\' ? char : match);
     }
-
     return value;
 }
 
@@ -2051,8 +2118,11 @@ function scoreSnapshotElement(element, normalizedTarget, targetHints, options) {
         return 0;
     }
 
-    if (targetHints.uid && element.uid === targetHints.uid) {
-        return 1000;
+    if (targetHints.uid) {
+        return element.uid === targetHints.uid ? 1000 : 0;
+    }
+    if (targetHints.role && element.role !== targetHints.role) {
+        return 0;
     }
 
     if (options.mode === 'click' && !isLikelyClickable(element.role)) {
@@ -2066,10 +2136,6 @@ function scoreSnapshotElement(element, normalizedTarget, targetHints, options) {
     let score = 0;
     const normalizedName = normalizeText(element.name);
     const quoted = element.quotedTexts.map(normalizeText);
-
-    if (targetHints.role && element.role === targetHints.role) {
-        score += 100;
-    }
 
     if (targetHints.name && normalizedName === targetHints.name) {
         score += 850;
@@ -2085,8 +2151,8 @@ function scoreSnapshotElement(element, normalizedTarget, targetHints, options) {
         score += 500;
     }
 
-    if (targetHints.role && element.role !== targetHints.role) {
-        score -= 150;
+    if (score > 0 && targetHints.role) {
+        score += 100;
     }
 
     return Math.max(score, 0);
@@ -2095,8 +2161,8 @@ function scoreSnapshotElement(element, normalizedTarget, targetHints, options) {
 function parseTargetHints(target) {
     const raw = stripWrappingQuotes(String(target).trim());
     const normalized = normalizeText(raw);
-    const uidMatch = raw.match(/^uid:(.+)$/i);
-    const roleNameMatch = raw.match(/^([a-z][\w-]*)\s+(.+)$/i);
+    const uidMatch = raw.match(/^uid[:=](.+)$/i);
+    const roleNameMatch = raw.match(/^(button|link|textbox|combobox|checkbox|radio|tab|menuitem|switch|searchbox)\s+(.+)$/i);
 
     return {
         uid: uidMatch ? uidMatch[1].trim() : null,
@@ -2164,14 +2230,6 @@ function inferTargetOptions(action) {
     }
 
     return {};
-}
-
-function maskValueForLog(selector, value) {
-    return isSensitiveTarget(selector) ? '*'.repeat(Math.max(String(value).length, 8)) : value;
-}
-
-function isSensitiveTarget(target) {
-    return /password|passcode|secret|token/i.test(String(target || ''));
 }
 
 function normalizePageEntries(value) {
@@ -2573,7 +2631,7 @@ async function ensureCdp(options) {
         logFile: options.chromeLogFile,
     });
 
-    console.error(`[cdp] starting Chrome pid=${child.pid} port=${cdpPort} userDataDir=${options.chromeUserDataDir}`);
+    writeOutput('error', `[cdp] starting Chrome pid=${child.pid} port=${cdpPort} userDataDir=${options.chromeUserDataDir}`);
     await waitForCdp(options.browserUrl, options.cdpStartupTimeoutMs, child, options.chromeLogFile, chromePath);
 }
 
@@ -2780,6 +2838,7 @@ function renderUsage() {
         '  node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then click Dashboard then reload then read page"',
         '',
         'Options:',
+        '  --stdin (read instructions from standard input; avoids input values in argv)',
         '  --debug',
         '  --show-tools',
         '  --show-tool-schemas',
@@ -2798,17 +2857,26 @@ function renderUsage() {
 }
 
 async function main() {
-    const options = parseArgs(process.argv.slice(2));
-
-    if (!options.instruction && !options.showTools && !options.showToolSchemas) {
-        console.error(renderUsage());
-        process.exitCode = 1;
-        return;
-    }
-
+    let options;
     let client = null;
-
     try {
+        options = parseArgs(process.argv.slice(2));
+        if (options.stdin) {
+            if (options.instruction) throw new Error('Use either --stdin or an instruction argument, not both.');
+            options.instruction = fs.readFileSync(0, 'utf8').trim();
+        }
+        if (!options.instruction && !options.showTools && !options.showToolSchemas) {
+            writeOutput('error', renderUsage());
+            process.exitCode = 1;
+            return;
+        }
+        // Parse before launching Chrome/MCP and register every input before any output.
+        if (options.instruction) {
+            const parser = new ChromeMcpCli({tools: []});
+            for (const action of parser.parseInstruction(options.instruction)) {
+                if (['type', 'type-active'].includes(action.type)) rememberInput(action.text);
+            }
+        }
         const runtime = await prepareRuntime(options);
 
         client = new McpStdioClient({
@@ -2820,7 +2888,7 @@ async function main() {
         await client.start();
 
         if (options.showTools || options.showToolSchemas) {
-            console.log(options.showToolSchemas ? renderToolSchemas(client.tools) : renderToolNames(client.tools));
+            writeOutput('log', options.showToolSchemas ? renderToolSchemas(client.tools) : renderToolNames(client.tools));
             return;
         }
 
@@ -2830,23 +2898,25 @@ async function main() {
         });
         await cli.initializeSession();
         const outputs = await cli.executeInstruction(options.instruction);
-        console.log(outputs.join('\n'));
+        writeOutput('log', outputs.join('\n'));
     } catch (error) {
-        console.error('[error]', error.message);
+        writeOutput('error', '[error]', error.message);
         if (error.code) {
-            console.error('[error] code:', error.code);
+            writeOutput('error', '[error] code:', error.code);
         }
         if (error.data) {
-            console.error('[error] data:', JSON.stringify(error.data, null, 2));
+            writeOutput('error', '[error] data:', JSON.stringify(error.data, null, 2));
         }
         process.exitCode = 1;
     } finally {
         if (client) {
             await client.close().catch(closeError => {
-                console.error('[error] failed to close MCP client:', closeError.message);
+                writeOutput('error', '[error] failed to close MCP client:', closeError.message);
             });
         }
     }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = {ChromeMcpCli, McpStdioClient, parseArgs, splitInstructions, redactOutput, rememberInput};
