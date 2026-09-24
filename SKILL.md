@@ -17,7 +17,7 @@ Use the bundled runner script for browser-driven validation.
 
 1. Locate this skill directory and run its bundled script:
    `node <skill-directory>/scripts/chrome-devtools-runner.js ...`
-   In this repository, `<skill-directory>` is `.codex/skills/chrome-devtools-runner`. Do not assume a root-level shim exists.
+   Use the directory containing this `SKILL.md`; do not assume a repository-local copy or root-level shim exists.
 2. Default mode lets `chrome-devtools-mcp` manage Chrome.
 3. Use `--browser-url http://127.0.0.1:9222` to connect to an existing CDP instance.
 4. Use `--ensure-cdp` to start Chrome with CDP if it is not already running.
@@ -26,7 +26,11 @@ Use the bundled runner script for browser-driven validation.
 ## Preferred usage
 
 - Use high-level actions such as `open`, `new tab`, `list tabs`, `switch tab`, `close tab`, `click`, `type`, `submit`, `back`, `forward`, `reload`, `set viewport`, `read viewport`, `wait`, `wait url`, `wait text gone`, `expect text`, `expect url`, `expect title`, `read page`, `snapshot`, `accept dialog`, and `dismiss dialog`.
-- Prefer user-visible labels over CSS selectors where possible.
+- Prefer user-visible labels over CSS selectors where possible. If the target is ambiguous, inspect the candidates and use a unique selector or `uid:<ID>` from a fresh snapshot; never pick the first match automatically.
+- Quote targets containing spaces and values containing `then`, `and`, `、`, or newlines, for example `type "Login ID" "bread and butter、東京"`. Inside quoted arguments, escape the matching quote and backslash with a backslash.
+- For credentials, supply the instruction through `--stdin` from a trusted process rather than putting secrets in command-line arguments or shell history. All typed values are hidden in summaries and masked when echoed in runner output within the same invocation. Debug output omits MCP payloads and raw server stderr. This does not sanitize arbitrary pre-existing page data or files written by Chrome/MCP; avoid reading secrets through `eval`.
+- After reconnecting to an existing browser, explicitly `switch tab <URL or ID>` before operating; do not assume the previous invocation's selected tab is retained.
+- An explicit `submit <selector>` must resolve to exactly one element belonging to a form. Without a target, the focused form is used, or the only form on the page. Missing, ambiguous, and invalid forms fail without falling back to another form.
 - For web-app checks, verify both action success and visible outcome.
 - When a flow is asynchronous, add `wait` and `expect` steps instead of relying on timing assumptions.
 - When a request only says "confirm in browser" or similar, default to `open`, `read page`, `click`, `type`, `submit`, `back`, `forward`, `reload`, `wait`, `expect`, and finish with a short user-visible summary.
@@ -41,7 +45,7 @@ Use the bundled runner script for browser-driven validation.
 
 ## Examples
 
-- `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000/login then type Email user@example.com then type Password secret123 then click Log in then wait Dashboard then expect url /dashboard"`
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp --stdin` (send the login instruction through standard input)
 - `node <skill-directory>/scripts/chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "open http://localhost:3000/admin then snapshot"`
 - `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp "new tab https://example.com then list tabs then switch tab 1 then read page"`
 - `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then 画面を確認して"`
