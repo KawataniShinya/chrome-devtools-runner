@@ -1,432 +1,197 @@
 # Chrome DevTools Runner
 
-Chrome DevTools Runner は、[Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) を通して実際の Chrome ブラウザを操作し、Web アプリケーションを検証するための Codex skill 兼コマンドラインランナーです。
+Chrome DevTools MCP 経由で Chrome を操作し、画面遷移・入力・表示結果を検証する Codex skill / CLI です。
 
-用途は、ユーザーに見えるブラウザ動作の確認です。ログイン、画面遷移、ボタンクリック、フォーム入力、フォーム送信、ブラウザ履歴の移動、再読み込み、画面幅の切り替え、非同期 UI の待機、現在ページの読み取り、URL や表示テキストの検証を行い、ユーザーが実際に認識できる内容を根拠付きで報告できます。
+## 構成とつながり
 
-## このツールの目的
+このスキルは、Codex 向けの手順書とブラウザ操作用の runner をまとめたものです。runner は外部パッケージの `chrome-devtools-mcp` を別プロセスとして起動し、そのサーバーを通して Chrome を操作します。
 
-LLM を使った開発では、「コード上は正しそう」に留まらず、ブラウザ上で何が見えているかを確認したい場面が多くあります。このプロジェクトは、Codex から呼び出せる小さなランナーとして、Chrome を MCP 経由で操作し、観測可能な証拠を返します。
-
-- 現在の URL と title
-- ページ上に表示されているテキスト
-- アクセシビリティスナップショット上の要素
-- ユーザー向けラベルを使ったフォーム入力やクリック、フォーム送信
-- 非同期フローに対する wait / expect
-- タブの作成、切り替え、一覧表示、クローズ
-- ブラウザ履歴の移動と再読み込み
-- モバイル幅やデスクトップ幅への切り替え
-
-設計は実務寄りです。ラベル、role、表示テキスト、アクセシビリティ snapshot の UID といったブラウザ視点のターゲット解決を優先しつつ、難しいページでは DOM / evaluate のフォールバックも使えるようにしています。
-
-## リポジトリ構成
-
-```text
-.
-├── SKILL.md
-├── README.md
-├── LICENSE
-├── agents/
-│   └── openai.yaml
-├── references/
-│   └── usage-notes.md
-└── scripts/
-    └── chrome-devtools-runner.js
+```mermaid
+flowchart TD
+    Codex[Codex：依頼を受けて操作を実行]
+    subgraph Skill[このツール：chrome-devtools-runner スキル]
+        Guide[SKILL.md：Codex向け手順]
+        Runner[runner：命令解析・誤操作防止・結果整理]
+        subgraph Dependency[外部依存：npmで導入]
+            Server[chrome-devtools-mcp：別プロセス]
+        end
+        Runner <-->|MCP：標準入力・標準出力| Server
+    end
+    subgraph Browser[スキルの外部：ブラウザ]
+        Chrome[Chrome：ページの表示・実行]
+    end
+    App[確認対象のWebアプリ]
+    Guide -. 手順を提供 .-> Codex
+    Codex -->|命令を渡してrunnerを起動| Runner
+    Runner -->|操作結果・検証結果| Codex
+    Server <-->|CDP：ブラウザ操作・情報取得| Chrome
+    Chrome <-->|HTTP / HTTPS| App
+    style Skill fill:#eef6ff,stroke:#2563eb,stroke-width:3px
+    style Dependency fill:#ffffff,stroke:#64748b,stroke-dasharray:5 5
+    style Browser fill:#f8fafc,stroke:#64748b,stroke-width:2px
 ```
 
-- `SKILL.md`: Codex skill の定義とトリガー方針
-- `agents/openai.yaml`: エージェント向けメタデータ
-- `scripts/chrome-devtools-runner.js`: CLI ランナー本体
-- `references/usage-notes.md`: 今後のメンテナ向け運用メモ
+**青い枠が、このツール（スキル）の配置範囲です。** Codex と Chrome の間に位置し、命令をブラウザ操作へつなぎ、結果を Codex に返します。Chrome は独立した外部プログラムとして、スキルの枠外に示しています。
 
-## 動作要件
+枠内の `chrome-devtools-mcp` は、このツール独自の実装ではなく、`node_modules` に導入する外部依存です。点線の枠で区別しています。この図の枠は配置・構成上の区分であり、OSのプロセス境界やセキュリティ境界を示すものではありません。
 
-- Node.js 18 以上
-- `npx`
-- Google Chrome
-- 初回の `npx -y chrome-devtools-mcp@latest` 解決時にネットワークアクセス可能であること
+この図は、この runner を使う場合の構成です。MCP 通信を行うクライアント処理は runner 内に実装しています。MCP と CDP は通信規約であり、それ自体がインストールするプログラムの名称ではありません。
 
-このリポジトリ自体にインストール手順はまだありません。ランナーは必要時に `chrome-devtools-mcp` を自動で起動します。
-
-## Codex skill としての配置
-
-プロジェクトローカル skill として使う場合は、次の位置に配置します。
-
-```text
-.codex/skills/chrome-devtools-runner
-```
-
-この状態で Codex は、次のような曖昧な依頼も含めてブラウザ確認タスクにこの skill を使えます。通常フローでは、URL 直打ちよりも画面上のリンク、ボタン、フォーム、履歴操作を優先します。
-
-- 「ブラウザで確認して」
-- 「画面を確認して」
-- 「実際に操作して」
-- 「ユーザー目線で見て」
-- `log in and try it`
-- `check this in the browser`
-
-ホストプロジェクト側から直接 runner を使いたい場合は、リポジトリルートに薄い shim を置けます。
-
-```js
-#!/usr/bin/env node
-
-require('./.codex/skills/chrome-devtools-runner/scripts/chrome-devtools-runner.js');
-```
-
-これで次のように実行できます。
-
-```sh
-node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then read page"
-```
-
-## 基本的な使い方
-
-Web アプリケーションを確認したいリポジトリのルートで実行します。
-
-```sh
-node .codex/skills/chrome-devtools-runner/scripts/chrome-devtools-runner.js \
-  --ensure-cdp \
-  "open http://localhost:3000/login then read page"
-```
-
-ルート shim がある場合:
-
-```sh
-node chrome-devtools-runner.js --ensure-cdp \
-  "open http://localhost:3000/login then read page"
-```
-
-ログイン確認の例:
-
-```sh
-node chrome-devtools-runner.js --ensure-cdp \
-  "open http://localhost:3000/login then type Email user@example.com then type Password secret123 then click Log in then wait url /dashboard then read page"
-```
-
-## ブラウザ起動モード
-
-### MCP 管理 Chrome
-
-```sh
-node chrome-devtools-runner.js "open https://example.com then title"
-```
-
-このモードでは `chrome-devtools-mcp` が Chrome の起動と管理を行います。
-
-### 管理付き CDP Chrome
-
-```sh
-node chrome-devtools-runner.js --ensure-cdp \
-  "open http://localhost:3000 then read page"
-```
-
-`--ensure-cdp` は `http://127.0.0.1:9222/json/version` を確認し、そこに CDP が出ていなければ remote debugging 付きで Chrome を起動し、そのエンドポイントに `chrome-devtools-mcp` を接続します。
-
-既定では、起動ごとに一時 Chrome profile を作成します。これにより、古い lock ファイルや過去セッションのブラウザ状態が現在の確認作業に混入するのを避けられます。
-Chrome の起動は指定した実行ファイルを直接使います。macOS の `open -n -a` による救済起動は使わないため、`--chrome-path` は実際に実行できる Chrome バイナリを指すようにしてください。
-`set viewport` で指定した画面幅は、タブ移動や新規タブ作成後にも再適用されます。モバイル確認では先に viewport を切り替え、そのまま画面操作を進めてください。
-
-### 既存 CDP Chrome への接続
-
-```sh
-node chrome-devtools-runner.js \
-  --browser-url http://127.0.0.1:9222 \
-  "read page"
-```
-
-自分で Chrome を起動済みの場合はこちらを使います。例:
-
-```sh
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --remote-debugging-port=9222 \
-  --user-data-dir=/tmp/chrome-debug
-```
-
-## オプション
-
-| オプション | 説明 |
-| --- | --- |
-| `--debug` | 秘匿処理済みのメタデータを出力します。 |
-| `--stdin` | 命令を標準入力から読み込みます。位置引数の命令とは併用できません。 |
-| `--show-tools` | 利用可能な MCP tool 名と説明を表示します。 |
-| `--show-tool-schemas` | 利用可能な MCP tool schema を表示します。MCP 側の引数仕様確認に使います。 |
-| `--timeout <ms>` | JSON-RPC リクエストのタイムアウト。既定値: `30000` |
-| `--server-command <command>` | MCP サーバー起動コマンドを上書きします。 |
-| `--browser-url <url>` | 既存の Chrome DevTools Protocol endpoint に接続します。 |
-| `--ensure-cdp` | endpoint が存在しない場合に Chrome を CDP 付きで起動します。 |
-| `--cdp-host <host>` | `--ensure-cdp` 用の CDP host。既定値: `127.0.0.1` |
-| `--cdp-port <port>` | `--ensure-cdp` 用の CDP port。既定値: `9222` |
-| `--cdp-startup-timeout <ms>` | CDP 起動待ち時間。既定値: `10000` |
-| `--chrome-path <path>` | Chrome 実行ファイルのパス。既定ではプラットフォーム依存パスまたは `CHROME_PATH` |
-| `--chrome-user-data-dir <path>` | 管理付き CDP モードで使う Chrome profile ディレクトリ。既定では自動作成の一時 profile |
-| `--reuse-chrome-profile` | 指定した Chrome profile ディレクトリを意図的に再利用します。 |
-| `--chrome-log-file <path>` | Chrome 起動ログの出力先。既定では OS の一時ディレクトリ |
-
-環境変数:
-
-- `MCP_SERVER_COMMAND`
-- `CHROME_PATH`
-- `CHROME_USER_DATA_DIR`
-- `CHROME_LOG_FILE`
-
-もし npm cache の権限が壊れている環境なら、書き込み可能な cache を明示します。
-
-```sh
-env npm_config_cache=/tmp/npm-cache node chrome-devtools-runner.js --ensure-cdp "open https://example.com then title"
-```
-
-## 命令構文
-
-命令はプレーンテキストのステップ列です。`then`、`and`、改行、日本語句読点で区切れます。
-
-```sh
-node chrome-devtools-runner.js --ensure-cdp \
-  "open http://localhost:3000 then click Login then wait Dashboard then read page"
-```
-
-### ページ・タブ操作
-
-| 操作 | 例 |
-| --- | --- |
-| 現在タブで開く | `open http://localhost:3000` |
-| 新しいタブで開く | `new tab http://localhost:3000/favorites` |
-| タブ一覧表示 | `list tabs` |
-| タブ切り替え | `switch tab last`, `switch tab 1`, `switch tab Dashboard` |
-| タブを閉じる | `close tab current`, `close tab last` |
-| 戻る / 進む / 再読み込み | `back`, `forward`, `reload` |
-| フォーム送信 | `submit`, `submit #login-form` |
-| 画面幅切り替え | `set viewport mobile`, `set viewport 390x844`, `read viewport` |
-| 確認ダイアログ | `accept dialog`, `dismiss dialog` |
-| 現在ページを読む | `read page` |
-| title を取得 | `title` |
-| インタラクティブ要素を snapshot | `snapshot` |
-
-よく使う日本語エイリアスも入っています。
-
-- `画面を確認して`
-- `ページを確認して`
-- `タブを確認して`
-- `戻って`
-- `進んで`
-- `再読み込みして`
-- `モバイル幅にして`
-- `デスクトップ幅にして`
-- `新しいタブで開いて`
-- `切り替えて`
-- `閉じて`
-
-### 操作系アクション
-
-| 操作 | 例 |
-| --- | --- |
-| クリック | `click Log in`, `click #submit` |
-| 入力 | `type Email user@example.com` |
-| クォート付き入力 | `type Search "mobile suit"` |
-| アクティブ要素に入力 | `type hello` |
-| キー入力 | `press Enter`, `press Meta+L` |
-
-`click` と `type` は、まず MCP のアクセシビリティ snapshot からターゲット解決を試し、UID ベースで操作します。snapshot 解決だけでは不十分な場合に DOM ベースのフォールバックへ落ちます。
-
-### wait / expect 系アクション
-
-| 操作 | 例 |
-| --- | --- |
-| テキスト表示待ち | `wait Dashboard` |
-| URL 部分一致待ち | `wait url /dashboard` |
-| テキスト消滅待ち | `wait text gone Loading...` |
-| テキスト期待値 | `expect text You're logged in!` |
-| URL 期待値 | `expect url /dashboard` |
-| title 期待値 | `expect title Dashboard` |
-
-日本語エイリアス:
-
-- `url /dashboard になるまで待って`
-- `Loading... が消えるまで待って`
-
-### JavaScript 評価
-
-```sh
-node chrome-devtools-runner.js --ensure-cdp \
-  "open http://localhost:3000 then eval () => location.href"
-```
-
-`eval` は補助用途に留めるのが前提です。ブラウザ確認では、なるべくユーザーに見えるアクションと期待値で組み立ててください。技術的根拠として、動画再生状態、キャッシュ状態、アプリ固有の診断値を取りたいときに有効です。
-
-## 出力
-
-runner はアクションごとに 1 行または 1 ブロックを出力します。例:
-
-```text
-Opened http://localhost:3000/login
-Filled textbox "Email" [uid=1_3]: user@example.com
-Filled textbox "Password" [uid=1_5]: ***********
-Clicked button "LOG IN" [uid=1_10]
-Waited for URL: /dashboard
-Page: Dashboard
-URL: http://localhost:3000/dashboard
-Text: dashboard user you're logged in!
-Elements: 12
-```
-
-入力値は対象名に関係なく `[REDACTED]` として表示します。同じ実行中に入力した値が通常出力・エラーに含まれる場合もマスクします。`--debug` はMCPのリクエストID・ツール名などのメタデータだけを記録し、通信ペイロードとMCPサーバーの標準エラー本文は表示しません。
-
-認証情報はコマンド引数に直接含めず、`--stdin` で信頼したプロセスから命令を渡してください。既存のページデータ全般、Chrome/MCPが書き込むファイル、別の実行で入力した値まで秘匿する機能ではありません。秘密値を `eval` で読み出す操作は避けてください。
-
-### 引用符と操作対象
-
-- `type "Login ID" "bread and butter、東京"` のように対象と値を別々に引用できます。
-- 引用符内の `then`、`and`、`、`、改行は入力値として保持します。引用符とバックスラッシュはバックスラッシュでエスケープできます。
-- 同点のスナップショット候補、複数のCSS・同名ラベル候補は操作せずエラーにします。一意のCSSまたは最新スナップショットの `uid:<ID>` で指定し直してください。
-- `submit #target` が見つからない、複数に一致する、フォームに属さない場合、別フォームへの送信は行いません。対象省略時はフォーカス中のフォーム、またはページ内で唯一のフォームを使用します。フォーム検証が失敗した場合も送信しません。
-- MCPへ再接続した場合は、操作前に `switch tab <URL or ID>` で対象を指定してください。
-
-### 回帰テスト
-
-追加パッケージやChromeなしで実行できます。
-
-```bash
-node --test --test-concurrency=1 tests/*.test.js
-```
-
-`tests/fixtures/browser.html` は業務データを更新せずブラウザで入力・曖昧なクリック・フォーム送信を確認するためのページです。
-
-## 推奨する検証パターン
-
-Web アプリ確認では、次の流れが扱いやすいです。
-
-1. `open` で対象ページを開く
-2. `read page` または `snapshot` でブラウザ視点の状態を観察する
-3. `type Email ...`、`click Log in` のようにユーザー向けラベルで操作する
-4. 非同期変化に対して `wait url`、`wait`、`wait text gone` を入れる
-5. 最後に `expect text`、`expect url`、`expect title` で確認する
-6. レポートでは、まずブラウザ上で見えた結果を書き、その後に技術的根拠を添える
-
-例:
-
-```sh
-node chrome-devtools-runner.js --ensure-cdp \
-  "open http://localhost:3000/login then type Email user@example.com then type Password secret123 then click Log in then wait url /dashboard then expect text You're logged in! then read page"
-```
-
-## トラブルシューティング
-
-### `--ensure-cdp` で Chrome が起動しない
-
-runner は Chrome プロセス状態、Chrome の実行パス、ログファイルの場所を表示します。
-
-```text
-[cdp] starting Chrome pid=12345 port=9222 userDataDir=/tmp/chrome-devtools-runner-abc123
-[error] Chrome exited before CDP became available ... See /tmp/chrome-devtools-runner.chrome.log
-```
-
-まずログファイルを確認してください。よくある原因:
-
-- 現在の sandbox やデスクトップセッションでは Chrome を起動できない
-- 指定した CDP port が既に使われている
-- 再利用した profile ディレクトリが他の Chrome に lock されている
-- Chrome のパス指定が誤っている
-
-基本は一時 profile のまま使う方が安定します。永続 profile が必要なのは、ログイン状態やブラウザデータを意図的に引き継ぎたい場合だけです。
-
-```sh
-node chrome-devtools-runner.js \
-  --ensure-cdp \
-  --chrome-user-data-dir /tmp/chrome-debug \
-  --reuse-chrome-profile \
-  "open http://localhost:3000"
-```
-
-### MCP tool の仕様が変わった
-
-```sh
-node chrome-devtools-runner.js --ensure-cdp --show-tool-schemas
-```
-
-これで現在の `chrome-devtools-mcp` が公開している tool schema を確認できます。MCP 側の引数仕様が変わったときに、runner 側の追従に使います。
-
-### 別タブが意図せず操作される
-
-```sh
-node chrome-devtools-runner.js --ensure-cdp "list tabs"
-```
-
-選択中タブは `*` で表示されます。runner は MCP が selected として返すページを優先して以後の操作対象を追跡します。
-
-### npm cache の権限エラーが出る
-
-```sh
-env npm_config_cache=/tmp/npm-cache node chrome-devtools-runner.js --ensure-cdp "open https://example.com"
-```
-
-## セキュリティ注意点
-
-Chrome DevTools MCP はブラウザ状態を参照・変更できます。機密データを含む常用 profile に接続するのは、意図した場合だけにしてください。
-
-より安全に使うには:
-
-- `--ensure-cdp` の既定である一時 profile を使う
-- 永続 profile の利用は必要時だけに限定する
-- 実運用の認証情報は避ける
-- 広い `eval` 使用を避ける
-- ログやレポートに secrets を出さない
-
-## 開発時の確認
-
-構文チェック:
-
-```sh
-node --check scripts/chrome-devtools-runner.js
-```
-
-MCP tool 一覧:
-
-```sh
-node scripts/chrome-devtools-runner.js --ensure-cdp --show-tools
-```
-
-スモークテスト:
-
-```sh
-node scripts/chrome-devtools-runner.js --ensure-cdp \
-  "open https://example.com then wait Example Domain then read page"
-```
-
-タブ関連を変更したときの確認:
-
-```sh
-node scripts/chrome-devtools-runner.js --ensure-cdp \
-  "new tab https://example.com then new tab https://example.org then list tabs then switch tab last then read page then close tab current then list tabs"
-```
-
-## ライセンス
-
-MIT。詳細は [LICENSE](LICENSE) を参照してください。
-
-
-## 画面取得・診断・操作結果
-
-各操作が終わるたびに `[手順番号/総数] succeeded|failed 操作名 (所要時間)` と結果を出力します。途中で失敗しても先行結果は残り、後続操作は実行しません。クリックと直後のダイアログ応答は1つの操作として処理し、手順番号を範囲で表示します。`succeeded` は命令の完了を示すため、期待する画面状態は `expect` で別途確認してください。
-
-画面取得のオプションは `read page` / `snapshot` に適用します。
-
-| オプション | 内容 |
+| 構成要素 | 役割・配置 |
 |---|---|
-| `--full` | 取得したページ本文と要素を全件表示 |
-| `--filter TEXT` | 要素のテキスト表現を部分一致で絞り込み（大文字小文字を区別しない） |
-| `--offset N` | 絞り込み後の要素を0始まりで指定 |
-| `--limit N` | 要素の表示件数。指定時は `--full` より優先 |
-| `--text-limit N` | ページ本文の表示文字数。既定400。`--full` 指定時は制限しない |
-| `--output PATH` | 操作結果をJSON保存。既存ファイルは上書きせず、ブラウザ操作前にエラー |
+| スキル | `SKILL.md`、runner、手順書、テストなどの一式。Codex が実行方法を判断するための情報と実行手段を提供します。 |
+| Codex | ユーザーの依頼とスキルの手順から操作命令を組み立て、runner の結果を確認して報告します。 |
+| runner | `scripts/chrome-devtools-runner.js`。命令解析、対象の特定、曖昧な操作の拒否、入力値のマスク、結果出力を担当します。 |
+| Node.js | runner と MCP サーバーの JavaScript を実行する環境です。別途インストールします。 |
+| npm | MCP サーバーをパッケージとして取得するためのツールです。通常の runner 起動時に再ダウンロードするものではありません。 |
+| MCP | Model Context Protocol。runner がサーバーのツールを呼び出し、結果を受け取る通信規約です。この構成では標準入力・標準出力を使います。 |
+| chrome-devtools-mcp | npm パッケージとして配布される MCP サーバープログラム。スキル配下の `node_modules` に導入し、runner とは別プロセスで起動します。 |
+| CDP | Chrome DevTools Protocol。タブ操作、JavaScript 実行、画面情報取得などを外部から行うために Chrome が提供する通信規約です。 |
+| Chrome | 実際にページを表示・実行するブラウザです。MCP サーバーは Chrome に内蔵されていません。 |
+| 確認対象のWebアプリ | Chrome がアクセスするアプリケーション。ローカル環境でもリモート環境でも確認できます。 |
 
-例（スキルディレクトリで実行）:
+### 導入時の流れとバージョン固定
 
-```bash
-node scripts/chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 --full --output /tmp/browser-check.json "read page then expect text Dashboard"
-node scripts/chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 --filter button --offset 0 --limit 10 "snapshot"
+`chrome-devtools-mcp` は、このスキルで利用するためにダウンロードする外部プログラムです。runner がライブラリの関数を直接呼ぶ形式ではなく、インストール済みのサーバーを起動して通信します。
+
+```mermaid
+flowchart TD
+    Manifest[package.json：MCPサーバーを1.10.1に指定] --> Install[npm ci --ignore-scripts]
+    Lock[package-lock.json：取得対象・整合性情報を固定] --> Install
+    Registry[npmレジストリ：パッケージ配布元] -->|パッケージを取得| Install
+    Install --> Modules[node_modules/chrome-devtools-mcp に配置]
+    Modules --> Launch[実行時にrunnerがローカルのサーバーを起動]
 ```
 
-本文と要素には表示件数・省略件数を明示します。`--filter` はページ本文のフィルタではありません。本文は表示テキストを基に空白を正規化したもので、HTMLソースではありません。
+```text
+chrome-devtools-runner/
+├── SKILL.md                         # Codex向けの手順
+├── README.md                        # 構成・導入・操作方法
+├── scripts/chrome-devtools-runner.js # runnerとMCPクライアント処理
+├── package.json                     # 使用するMCPサーバーのバージョン
+├── package-lock.json                # インストール内容の固定
+└── node_modules/                    # npm ciで生成。Git管理対象外
+    └── chrome-devtools-mcp/          # 外部のMCPサーバープログラム
+```
 
-JSONには全体の `status`、各手順の `step` / `throughStep` / `status` / `durationMs` / `action` / `output` を保存します。失敗した手順には `error.context` として対象タブ・操作・診断情報を記録します。各手順後に更新するため途中失敗時の先行結果も残ります。ファイルは所有者のみ読み書きできる権限で作成します。同一実行中に入力した値は秘匿しますが、ページに元から存在する情報全般を秘匿する機能ではありません。
+以前の `npx -y chrome-devtools-mcp@latest` では、実行時期によって別のバージョンが使われる可能性がありました。現在は検証済みの **1.10.1** を使用し、サーバー更新による引数・返却形式の予期しない変化を防ぎます。更新するときは package と lock を一緒に変更し、回帰テストで確認します。
 
-非同期エラーにも診断を付加し、ページ・スナップショット・コンソールそれぞれを `ok` / `unavailable` / `failed` と区別します。診断が失敗しても元のエラーを保持し、古いスナップショットを現在の状態として扱いません。診断の追加待機は各ツール最大1.5秒です。出力量を抑えるため診断本文は1,000文字、スナップショットは40行、文字列形式のコンソール情報は4,000文字までとし、省略数を示します。診断のために失敗操作を再実行することはありません。
+固定対象は MCP サーバーのパッケージです。Chrome 本体は固定せず、Node.js は対応バージョン範囲を指定しています。実行環境全体を完全に固定するものではありません。明示的に `--server-command` などでサーバーを差し替えた場合は、この固定チェックの対象外です。
+
+### 実行時の流れ
+
+```mermaid
+sequenceDiagram
+    participant C as Codex
+    box rgb(238, 246, 255) このツール：スキル
+        participant R as runner
+        participant M as MCPサーバー（外部依存）
+    end
+    participant B as Chrome（スキル外部）
+    C->>R: 命令を渡して起動
+    R->>R: 命令解析・固定版の導入確認
+    Note over R,B: 接続モードに応じてChromeを起動、または既存Chromeへ接続
+    R->>M: ローカルのサーバーを別プロセスで起動
+    R->>M: MCP初期化・利用可能ツールの取得
+    loop 操作・検証ごと
+        R->>M: MCPツール呼び出し
+        M->>B: CDPで操作・状態取得
+        B-->>M: ページ情報・操作結果
+        M-->>R: MCPの応答
+        R-->>C: 整理した結果を順次出力
+    end
+    R->>M: 終了時にサーバーとの接続を閉じる
+```
+
+1つの命令で、対象の検索・操作・結果確認のために複数回のツール呼び出しが発生することがあります。エラー時は後続の命令を停止し、取得できた診断情報を返します。
+
+`http://127.0.0.1:9222` は、既存 CDP モードなどで使う **Chrome の操作用接続先**です。`http://localhost:3000/login` などの **確認対象ページのURL**とは用途が異なります。MCP 管理モードでは、利用者がこのポートを指定する必要はありません。各モードで誰が Chrome を起動するかは、次の「ブラウザ接続」を参照してください。
+
+## 導入
+
+Google Chrome と Node.js `^20.19.0 || ^22.12.0 || >=23`、npm が必要です。検証環境は macOS / Node.js 24.15.0 です。
+
+```sh
+cd ~/.codex/skills/chrome-devtools-runner
+npm ci --ignore-scripts
+```
+
+プロジェクト配下に配置した場合は、その skill ディレクトリで実行してください。依存取得時にはネットワーク接続が必要です。通常起動ではローカルに導入した **chrome-devtools-mcp 1.10.1** を使い、自動ダウンロード・自動更新はしません。依存は `package-lock.json` で固定しています。未導入やバージョン不一致は、ブラウザ起動前にエラーになります。
+
+以下の例はこのディレクトリを作業ディレクトリとしています。別の場所からは `scripts/chrome-devtools-runner.js` を絶対パスで指定してください。ルートの shim は不要です。
+
+## ブラウザ接続
+
+| モード | 指定 | 用途 |
+|---|---|---|
+| MCP 管理 | 指定なし | MCP が Chrome を起動・管理 |
+| 既存 CDP | `--browser-url http://127.0.0.1:9222` | 起動済みブラウザへ接続 |
+| CDP 起動補助 | `--ensure-cdp` | 接続先がなければ Chrome を起動 |
+
+```sh
+node scripts/chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000/login then read page"
+node scripts/chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "list tabs then switch tab http://localhost:3000/login then snapshot"
+```
+
+既存ブラウザへ再接続したら、URL または ID でタブを明示的に選択します。前回選択したタブの継続を前提にしません。`--ensure-cdp` は新規起動時に一時プロファイルを使います。状態を保存する必要がある場合だけ `--chrome-user-data-dir PATH --reuse-chrome-profile` を指定します。
+
+## 操作と検証
+
+命令は `then`、`and`、`、` で連結できます。空白を含む対象名や区切り語を含む値は引用符で囲みます。引用符内の引用符とバックスラッシュはバックスラッシュでエスケープします。
+
+```sh
+node scripts/chrome-devtools-runner.js --ensure-cdp 'open http://localhost:3000 then type "Login ID" "bread and butter、東京" then submit form #login then wait url /dashboard then expect text Dashboard'
+node scripts/chrome-devtools-runner.js --ensure-cdp 'switch tab http://localhost:3000 then set viewport mobile then read viewport then snapshot'
+```
+
+| 種類 | 命令例 |
+|---|---|
+| 遷移 | `open URL`, `back`, `forward`, `reload` |
+| タブ | `new tab URL`, `list tabs`, `switch tab URL`, `close tab ID` |
+| 操作 | `click 保存`, `type "Login ID" "value"`, `submit form #login`, `press Enter` |
+| 取得 | `title`, `read page`, `snapshot` |
+| 待機・検証 | `wait text`, `wait url /path`, `wait text gone Loading`, `expect text 完了`, `expect url /path`, `expect title タイトル` |
+| 画面幅 | `set viewport mobile`, `set viewport 1280x720`, `read viewport` |
+| ダイアログ | `accept dialog`, `dismiss dialog` |
+| JavaScript | `eval () => document.title` |
+
+ラベルが複数に一致した場合は停止します。新しい snapshot の `uid:<ID>` や一意な CSS セレクタで対象を特定してください。`submit` はフォーカス中のフォーム、またはページ内で唯一のフォームを対象とします。明示した対象が存在しない・複数ある・入力検証に失敗する場合、別のフォームへフォールバックしません。
+
+クリック成功だけでは遷移成功の証明にはなりません。`wait` / `expect` で結果を確認してください。新しいタブが開いた場合は `list tabs` → `switch tab` → 検証の順に操作します。
+
+## 秘密値と出力
+
+認証情報はコマンド引数やシェル履歴に埋め込まず、信頼できる入力元から `--stdin` に渡してください。標準入力と命令引数は併用できません。
+
+```sh
+node scripts/chrome-devtools-runner.js --ensure-cdp --stdin
+```
+
+全入力値を操作要約から除外し、同じ実行中に出力へ現れた入力値もマスクします。`--debug` は MCP の生ペイロード・標準エラーを表示しません。既存のページ情報や Chrome / MCP が保存するファイル全体を匿名化する機能ではありません。
+
+各操作は `[1/N] succeeded ...` / `failed ...` と所要時間を順次出力します。失敗後は後続操作を実行せず、完了済みの結果を保持します。
+
+- `--full`: 取得したテキスト・要素を省略せず表示。
+- `--filter TEXT --offset N --limit N`: 要素を大文字小文字を区別しない文字列で絞り込み、ページング。本文にはフィルタを適用しません。
+- `--text-limit N`: 本文プレビューの文字数。
+- `--output /tmp/new-report.json`: 各操作後に JSON レポートを更新。既存ファイルは拒否し、新規ファイルは所有者のみ読み書き可能にします。
+
+診断情報はページ・snapshot・console ごとに `ok` / `unavailable` / `failed` を区別します。診断要求は各1.5秒で打ち切り、元のエラーを保持します。診断取得失敗を理由に送信・更新操作を繰り返さないでください。
+
+## 詳細設定
+
+`--timeout MS`、`--show-tools`、`--show-tool-schemas`、`--debug` が利用できます。CDP 起動には `--cdp-host`、`--cdp-port`、`--cdp-startup-timeout`、`--chrome-path`、`--chrome-log-file` を指定できます。引数なしの実行でオプション一覧を表示します。
+
+`--server-command COMMAND` または `MCP_SERVER_COMMAND` でサーバーを差し替えられます。この場合はローカル依存の固定チェック対象外となります。信頼できるコマンドのみ指定してください。
+
+## 開発・保守
+
+```sh
+npm run check
+npm test
+npm run test:browser
+```
+
+`npm test` は Chrome・外部サイトへの接続不要です。`test:browser` はインストール済み Chrome を独立した一時プロファイルで起動し、同梱 HTML のみを操作します。`MCP_SERVER_COMMAND` は解除して実行してください。既存のログイン済みブラウザは操作しません。
+
+検証範囲、バージョン更新、障害の切り分けは [保守手順](references/usage-notes.md)、Codex の操作方針は [SKILL.md](SKILL.md) を参照してください。

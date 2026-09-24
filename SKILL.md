@@ -18,10 +18,11 @@ Use the bundled runner script for browser-driven validation.
 1. Locate this skill directory and run its bundled script:
    `node <skill-directory>/scripts/chrome-devtools-runner.js ...`
    Use the directory containing this `SKILL.md`; do not assume a repository-local copy or root-level shim exists.
-2. Default mode lets `chrome-devtools-mcp` manage Chrome.
-3. Use `--browser-url http://127.0.0.1:9222` to connect to an existing CDP instance.
-4. Use `--ensure-cdp` to start Chrome with CDP if it is not already running.
-5. `--ensure-cdp` now uses an auto-created temporary Chrome profile by default, which is more stable than reusing a fixed profile directory.
+2. On first installation or after dependency changes, run `npm ci --ignore-scripts` in this skill directory. Node.js must satisfy `^20.19.0 || ^22.12.0 || >=23`. The default server is local chrome-devtools-mcp 1.10.1, pinned by package-lock.json; missing/mismatched installation fails before browser startup. Explicit server overrides bypass this check.
+3. Default mode lets `chrome-devtools-mcp` manage Chrome.
+4. Use `--browser-url http://127.0.0.1:9222` to connect to an existing CDP instance.
+5. Use `--ensure-cdp` to start Chrome with CDP if it is not already running.
+6. `--ensure-cdp` now uses an auto-created temporary Chrome profile by default, which is more stable than reusing a fixed profile directory.
 
 ## Preferred usage
 
@@ -59,4 +60,5 @@ Use the bundled runner script for browser-driven validation.
 ## Resources
 
 - Runner implementation: `scripts/chrome-devtools-runner.js`
-- Notes for future extraction into a standalone repo can live in `references/` when needed.
+- Setup and CLI examples: [README.md](README.md)
+- Regression tests, version updates and troubleshooting: [references/usage-notes.md](references/usage-notes.md)
