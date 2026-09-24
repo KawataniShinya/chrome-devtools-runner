@@ -425,10 +425,14 @@ class McpStdioClient {
     }
 
     async callTool(name, args = {}) {
-        return this.sendRequest('tools/call', {
+        const result = await this.sendRequest('tools/call', {
             name,
             arguments: args,
         });
+        if (result?.isError) {
+            throw new Error(`MCP tool ${name} failed: ${extractPlainText(result) || 'Unknown tool error'}`);
+        }
+        return result;
     }
 
     async close() {
@@ -476,6 +480,18 @@ class ChromeMcpCli {
 
     hasTool(...names) {
         return names.some(name => this.toolsByName.has(name));
+    }
+
+    async callTool(name, args = {}) {
+        const schema = this.toolsByName.get(name)?.inputSchema;
+        if (schema?.properties?.pageId && args.pageId === undefined) {
+            if (this.currentPageId !== null) {
+                args = {...args, pageId: this.currentPageId};
+            } else if (schema.required?.includes('pageId')) {
+                throw new Error(`No selected page for MCP tool ${name}. Use list tabs and switch tab first.`);
+            }
+        }
+        return this.client.callTool(name, args);
     }
 
     async initializeSession() {
@@ -851,7 +867,7 @@ class ChromeMcpCli {
         if (navigateTool && selectPageTool && this.currentPageId !== null) {
             try {
                 await this.selectPage(this.currentPageId);
-                await this.client.callTool(navigateTool, {
+                await this.callTool(navigateTool, {
                     type: 'url',
                     url,
                 });
@@ -876,7 +892,7 @@ class ChromeMcpCli {
             if (reusablePage) {
                 try {
                     await this.selectPage(reusablePage.pageId);
-                    await this.client.callTool(navigateTool, {
+                    await this.callTool(navigateTool, {
                         type: 'url',
                         url,
                     });
@@ -894,7 +910,7 @@ class ChromeMcpCli {
 
         if (navigateTool) {
             try {
-                await this.client.callTool(navigateTool, {
+                await this.callTool(navigateTool, {
                     type: 'url',
                     url,
                 });
@@ -912,7 +928,7 @@ class ChromeMcpCli {
         if (evalTool) {
             try {
                 await this.ensureSelectedPageContext();
-                await this.client.callTool(evalTool, {
+                await this.callTool(evalTool, {
                     function: `() => { location.href = ${JSON.stringify(url)}; return location.href; }`,
                 });
                 this.latestSnapshot = null;
@@ -936,7 +952,7 @@ class ChromeMcpCli {
             ? '() => { history.back(); return location.href; }'
             : '() => { history.forward(); return location.href; }';
 
-        await this.client.callTool(tool, {function: script});
+        await this.callTool(tool, {function: script});
         this.latestSnapshot = null;
 
         try {
@@ -953,7 +969,7 @@ class ChromeMcpCli {
 
     async reloadPage() {
         const tool = this.requireTool('evaluate_script');
-        await this.client.callTool(tool, {
+        await this.callTool(tool, {
             function: '() => { location.reload(); return location.href; }',
         });
         this.latestSnapshot = null;
@@ -963,7 +979,7 @@ class ChromeMcpCli {
     async openNewTab(url) {
         const tool = this.requireTool('new_page');
         const previousPages = this.hasTool('list_pages') ? await this.listPages().catch(() => []) : [];
-        await this.client.callTool(tool, {url});
+        await this.callTool(tool, {url});
         this.latestSnapshot = null;
         await this.syncCurrentPageId(url, {preferSelected: true, previousPages});
         await this.autoSelectPageContext().catch(error => {
@@ -982,7 +998,7 @@ class ChromeMcpCli {
         const resolved = await this.resolveSnapshotTarget(selector, {mode: 'click'});
         if (resolved) {
             const tool = this.requireTool('click');
-            await this.client.callTool(tool, {
+            await this.callTool(tool, {
                 uid: resolved.uid,
                 includeSnapshot: true,
             });
@@ -997,7 +1013,7 @@ class ChromeMcpCli {
     async typeIntoSelector(selector, text) {
         const resolved = await this.resolveSnapshotTarget(selector, {mode: 'fill'});
         if (resolved && this.hasTool('fill')) {
-            await this.client.callTool('fill', {
+            await this.callTool('fill', {
                 uid: resolved.uid,
                 value: text,
                 includeSnapshot: true,
@@ -1012,14 +1028,14 @@ class ChromeMcpCli {
 
     async typeIntoActiveElement(text) {
         if (this.hasTool('type_text')) {
-            await this.client.callTool('type_text', {text});
+            await this.callTool('type_text', {text});
             this.latestSnapshot = null;
             return `Typed into active element: ${maskValueForLog('active-element', text)}`;
         }
 
         const tool = this.requireTool('evaluate_script');
         const textLiteral = JSON.stringify(text);
-        const result = await this.client.callTool(tool, {
+        const result = await this.callTool(tool, {
             function: `() => {
                 const value = ${textLiteral};
                 const element = document.activeElement;
@@ -1056,7 +1072,7 @@ class ChromeMcpCli {
     async submitForm(target = 'current') {
         const tool = this.requireTool('evaluate_script');
         const targetLiteral = JSON.stringify(String(target || 'current'));
-        const result = await this.client.callTool(tool, {
+        const result = await this.callTool(tool, {
             function: `() => {
                 const target = ${targetLiteral};
                 const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
@@ -1110,7 +1126,7 @@ class ChromeMcpCli {
 
     async getTitle() {
         const tool = this.requireTool('evaluate_script');
-        const result = await this.client.callTool(tool, {
+        const result = await this.callTool(tool, {
             function: '() => document.title',
         });
 
@@ -1128,7 +1144,7 @@ class ChromeMcpCli {
             request.dialogAction = dialogAction;
         }
 
-        const result = await this.client.callTool(tool, request);
+        const result = await this.callTool(tool, request);
 
         const response = unwrapToolResult(result);
         return `Eval: ${typeof response === 'string' ? response : JSON.stringify(response)}`;
@@ -1142,21 +1158,21 @@ class ChromeMcpCli {
             payload.promptText = String(promptText);
         }
 
-        await this.client.callTool(tool, payload);
+        await this.callTool(tool, payload);
         this.latestSnapshot = null;
         return `Dialog ${action}ed`;
     }
 
     async pressKey(key) {
         const tool = this.requireTool('press_key');
-        await this.client.callTool(tool, {key});
+        await this.callTool(tool, {key});
         this.latestSnapshot = null;
         return `Pressed ${key}`;
     }
 
     async waitForText(text, timeoutMs = DEFAULT_WAIT_TIMEOUT_MS) {
         if (this.hasTool('wait_for')) {
-            await this.client.callTool('wait_for', {
+            await this.callTool('wait_for', {
                 text: [text],
                 timeout: timeoutMs,
             });
@@ -1238,14 +1254,14 @@ class ChromeMcpCli {
             if (viewport.networkConditions) {
                 payload.networkConditions = viewport.networkConditions;
             }
-            await this.client.callTool(toolName, payload);
+            await this.callTool(toolName, payload);
             this.currentViewport = viewport;
             this.latestSnapshot = null;
             return `Viewport set to ${viewport.label}`;
         }
 
         if (resizeTool) {
-            await this.client.callTool(resizeTool, {
+            await this.callTool(resizeTool, {
                 width: viewport.width,
                 height: viewport.height,
             });
@@ -1281,12 +1297,12 @@ class ChromeMcpCli {
                 payload.networkConditions = viewport.networkConditions;
             }
 
-            await this.client.callTool(toolName, payload);
+            await this.callTool(toolName, payload);
             return;
         }
 
         if (resizeTool) {
-            await this.client.callTool(resizeTool, {
+            await this.callTool(resizeTool, {
                 width: viewport.width,
                 height: viewport.height,
             });
@@ -1296,7 +1312,7 @@ class ChromeMcpCli {
     async readViewport() {
         const page = await this.getCurrentPageState();
         const tool = this.requireTool('evaluate_script');
-        const result = await this.client.callTool(tool, {
+        const result = await this.callTool(tool, {
             function: '() => ({ innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWidth: window.outerWidth, outerHeight: window.outerHeight, devicePixelRatio: window.devicePixelRatio, userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints || 0, hoverNone: window.matchMedia(\'(hover: none)\').matches, pointerCoarse: window.matchMedia(\'(pointer: coarse)\').matches })',
         });
         const info = unwrapToolResult(result) || {};
@@ -1316,7 +1332,7 @@ class ChromeMcpCli {
 
     async readPage() {
         const page = await this.getCurrentPageState();
-        const snapshot = await this.safeRefreshSnapshot();
+        const snapshot = await this.refreshSnapshot();
         const elements = snapshot.elements || parseSnapshotElements(snapshot.text || '');
         const textPreview = normalizeText(page.text).slice(0, 400);
 
@@ -1331,7 +1347,7 @@ class ChromeMcpCli {
 
     async getCurrentPageState() {
         const tool = this.requireTool('evaluate_script');
-        const result = await this.client.callTool(tool, {
+        const result = await this.callTool(tool, {
             function: `() => ({
                 url: location.href,
                 title: document.title,
@@ -1350,7 +1366,7 @@ class ChromeMcpCli {
             return {text: '', elements: []};
         }
 
-        const result = await this.client.callTool('take_snapshot', {verbose});
+        const result = await this.callTool('take_snapshot', {verbose});
         const text = extractPlainText(result);
         const elements = parseSnapshotElements(text);
         this.latestSnapshot = {text, elements};
@@ -1424,7 +1440,7 @@ class ChromeMcpCli {
             toolPayload.dialogAction = options.dialogAction;
         }
 
-        const result = await this.client.callTool(tool, toolPayload);
+        const result = await this.callTool(tool, toolPayload);
 
         const payload = unwrapToolResult(result);
         if (!payload || payload.ok !== true) {
@@ -1437,7 +1453,7 @@ class ChromeMcpCli {
     async typeIntoSelectorWithDom(selector, text) {
         const tool = this.requireTool('evaluate_script');
         const selectorLiteral = JSON.stringify(selector);
-        const result = await this.client.callTool(tool, {
+        const result = await this.callTool(tool, {
             function: `() => {
                 const selector = ${selectorLiteral};
                 const element = document.querySelector(selector);
@@ -1469,12 +1485,12 @@ class ChromeMcpCli {
         }
 
         if (this.hasTool('type_text')) {
-            await this.client.callTool('type_text', {text});
+            await this.callTool('type_text', {text});
             return selector;
         }
 
         const fallbackTextLiteral = JSON.stringify(text);
-        const applyResult = await this.client.callTool(tool, {
+        const applyResult = await this.callTool(tool, {
             function: `() => {
                 const selector = ${selectorLiteral};
                 const value = ${fallbackTextLiteral};
@@ -1514,7 +1530,7 @@ class ChromeMcpCli {
         }
 
         try {
-            const result = await this.client.callTool('list_console_messages', {
+            const result = await this.callTool('list_console_messages', {
                 types: ['error'],
                 pageSize: 10,
             });
@@ -1582,7 +1598,7 @@ class ChromeMcpCli {
 
     async listPages() {
         const tool = this.requireTool('list_pages');
-        const result = await this.client.callTool(tool, {});
+        const result = await this.callTool(tool, {});
         const structuredPages = normalizePageEntries(extractStructuredData(result));
         if (structuredPages.length > 0) {
             return structuredPages;
@@ -1634,7 +1650,7 @@ class ChromeMcpCli {
             payload.pageId = target;
         }
 
-        await this.client.callTool(tool, payload);
+        await this.callTool(tool, payload);
         this.currentPageId = payload.pageId ?? null;
         this.currentPageIndex = target && typeof target === 'object' && Number.isInteger(target.index) ? target.index : null;
         await this.reapplyViewportPreference().catch(error => {
@@ -1669,7 +1685,7 @@ class ChromeMcpCli {
             throw new Error(`Tab index is unavailable for ${formatPageRef(page)}`);
         }
 
-        await this.client.callTool(tool, {pageId: page.pageId});
+        await this.callTool(tool, {pageId: page.pageId});
         this.latestSnapshot = null;
 
         const remainingPages = await this.waitForPageClose(pages, page);
@@ -2206,6 +2222,20 @@ function parsePageEntriesFromText(text) {
     for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) {
+            continue;
+        }
+
+        // Current MCP versions include the title before the parenthesized URL.
+        const titledMatch = trimmed.match(/^(\d+):\s+(.*?)\s+\((\S+)\)(?:\s+(\[selected\]))?$/i);
+        if (titledMatch) {
+            const pageId = Number(titledMatch[1]);
+            pages.push({
+                pageId,
+                index: pageId,
+                selected: Boolean(titledMatch[4]),
+                title: titledMatch[2],
+                url: titledMatch[3],
+            });
             continue;
         }
 

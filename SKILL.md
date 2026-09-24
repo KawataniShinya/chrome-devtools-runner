@@ -15,8 +15,9 @@ Use the bundled runner script for browser-driven validation.
 
 ## Workflow
 
-1. Run the runner from the repo root:
-   `node chrome-devtools-runner.js ...`
+1. Locate this skill directory and run its bundled script:
+   `node <skill-directory>/scripts/chrome-devtools-runner.js ...`
+   In this repository, `<skill-directory>` is `.codex/skills/chrome-devtools-runner`. Do not assume a root-level shim exists.
 2. Default mode lets `chrome-devtools-mcp` manage Chrome.
 3. Use `--browser-url http://127.0.0.1:9222` to connect to an existing CDP instance.
 4. Use `--ensure-cdp` to start Chrome with CDP if it is not already running.
@@ -34,16 +35,18 @@ Use the bundled runner script for browser-driven validation.
 - When a destructive action opens a native browser confirmation dialog, use `accept dialog` or `dismiss dialog` explicitly instead of assuming the page will continue.
 - When using `--ensure-cdp`, prefer the default temporary profile unless the task explicitly needs a persistent browser state. Use `--reuse-chrome-profile` only when persistence is intentional.
 - Use `--show-tool-schemas` when MCP tool argument behavior changes or needs confirmation.
+- Links may open a new tab. Use `list tabs`, then `switch tab <ID or URL>` before reading or asserting the destination. A successful click alone does not verify navigation.
+- Tool errors must be reported as failures; an empty snapshot is not evidence that the page loaded successfully.
 - Treat `open` as the entry point for initial pages and direct-link/deep-link checks. For normal in-app navigation, prefer clicking links/buttons, submitting forms, and using browser history actions.
 
 ## Examples
 
-- `node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000/login then type Email user@example.com then type Password secret123 then click Log in then wait Dashboard then expect url /dashboard"`
-- `node chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "open http://localhost:3000/admin then snapshot"`
-- `node chrome-devtools-runner.js --ensure-cdp "new tab https://example.com then list tabs then switch tab 1 then read page"`
-- `node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then 画面を確認して"`
-- `node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then click Dashboard then back then forward then reload then read page"`
-- `node chrome-devtools-runner.js --ensure-cdp "set viewport mobile then open http://localhost:3000 then read viewport then read page"`
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000/login then type Email user@example.com then type Password secret123 then click Log in then wait Dashboard then expect url /dashboard"`
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "open http://localhost:3000/admin then snapshot"`
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp "new tab https://example.com then list tabs then switch tab 1 then read page"`
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then 画面を確認して"`
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then click Dashboard then back then forward then reload then read page"`
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp "set viewport mobile then open http://localhost:3000 then read viewport then read page"`
 
 ## Resources
 
