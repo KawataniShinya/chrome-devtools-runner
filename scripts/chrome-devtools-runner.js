@@ -58,10 +58,26 @@ function writeOutput(level, ...values) {
     console[level](...values.map(redactOutput));
 }
 
+function sanitizeReport(value) {
+    if (typeof value === 'string') return redactOutput(value);
+    if (Array.isArray(value)) return value.map(sanitizeReport);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeReport(item)]));
+    return value;
+}
+
+function describeAction(action) {
+    const description = {...action};
+    if (['type', 'type-active'].includes(action.type)) description.text = '[REDACTED]';
+    if (action.type === 'eval') description.script = '[OMITTED]';
+    return sanitizeReport(description);
+}
+
 function parseArgs(argv) {
     const args = [...argv];
     let debug = false;
     let stdin = false;
+    const view = {full: false, offset: 0, limit: null, textLimit: 400, filter: ""};
+    let outputPath = null;
     let showTools = false;
     let showToolSchemas = false;
     let timeoutMs = DEFAULT_TIMEOUT_MS;
@@ -80,6 +96,25 @@ function parseArgs(argv) {
     while (args.length > 0) {
         const rawValue = args.shift();
         const {name: value, inlineValue} = splitOption(rawValue);
+
+        if (value === '--full') {
+            view.full = true;
+            continue;
+        }
+        if (['--offset', '--limit', '--text-limit', '--filter', '--output'].includes(value)) {
+            if (!hasOptionValue(inlineValue, args)) throw new Error(`Missing value for ${value}`);
+            const argument = takeOptionValue(inlineValue, args);
+            if (value === '--output') outputPath = argument;
+            else if (value === '--filter') view.filter = argument;
+            else {
+                const number = Number(argument);
+                if (!/^\d+$/.test(argument) || !Number.isSafeInteger(number) || (value === '--limit' && number === 0)) {
+                    throw new Error(`Invalid non-negative integer for ${value}`);
+                }
+                view[{'--offset':'offset', '--limit':'limit', '--text-limit':'textLimit'}[value]] = number;
+            }
+            continue;
+        }
 
         if (value === '--stdin') {
             stdin = true;
@@ -162,6 +197,8 @@ function parseArgs(argv) {
     return {
         debug,
         stdin,
+        view,
+        outputPath,
         showTools,
         showToolSchemas,
         timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS,
@@ -451,11 +488,11 @@ class McpStdioClient {
         return tools;
     }
 
-    async callTool(name, args = {}) {
+    async callTool(name, args = {}, timeoutMs = this.timeoutMs) {
         const result = await this.sendRequest('tools/call', {
             name,
             arguments: args,
-        });
+        }, timeoutMs);
         if (result?.isError) {
             throw new Error(`MCP tool ${name} failed: ${extractPlainText(result) || 'Unknown tool error'}`);
         }
@@ -493,6 +530,11 @@ class ChromeMcpCli {
         this.currentPageId = null;
         this.currentPageIndex = null;
         this.currentViewport = null;
+        this.view = {full: false, offset: 0, limit: null, textLimit: 400, filter: '', ...options.view};
+        this.onResult = options.onResult || null;
+        this.results = [];
+        this.diagnosticTimeoutMs = options.diagnosticTimeoutMs ?? 1500;
+        this.requestTimeoutMs = undefined;
 
         for (const tool of client.tools) {
             this.toolsByName.set(tool.name, tool);
@@ -518,7 +560,7 @@ class ChromeMcpCli {
                 throw new Error(`No selected page for MCP tool ${name}. Use list tabs and switch tab first.`);
             }
         }
-        return this.client.callTool(name, args);
+        return this.client.callTool(name, args, this.requestTimeoutMs);
     }
 
     async initializeSession() {
@@ -795,26 +837,35 @@ class ChromeMcpCli {
             if (['type', 'type-active'].includes(action.type)) rememberInput(action.text);
         }
         const outputs = [];
-
+        this.results = [];
         for (let i = 0; i < actions.length; i += 1) {
-            const action = actions[i];
-            const nextAction = actions[i + 1] || null;
-
-            if (action.type === 'click' && nextAction && nextAction.type === 'dialog') {
-                outputs.push(await this.clickSelector(action.selector, {dialogAction: nextAction.action}));
-                i += 1;
-                continue;
+            const action = {...actions[i]};
+            const step = i + 1;
+            if (['click', 'eval'].includes(action.type) && actions[i + 1]?.type === 'dialog') {
+                action.dialogAction = actions[++i].action;
             }
-
-            if (action.type === 'eval' && nextAction && nextAction.type === 'dialog') {
-                outputs.push(await this.evaluateScript(action.script, nextAction.action));
-                i += 1;
-                continue;
+            const startedAt = Date.now();
+            let output;
+            let failure;
+            try {
+                output = await this.executeAction(action);
+            } catch (error) {
+                failure = error;
             }
-
-            outputs.push(await this.executeAction(action));
+            const record = sanitizeReport({
+                step,
+                throughStep: i + 1,
+                total: actions.length,
+                action: describeAction(action),
+                status: failure ? 'failed' : 'succeeded',
+                durationMs: Date.now() - startedAt,
+                ...(failure ? {error: {message: failure.message, code: failure.code, context: failure.data}} : {output}),
+            });
+            this.results.push(record);
+            if (this.onResult) await this.onResult(record);
+            if (failure) throw failure;
+            outputs.push(output);
         }
-
         return outputs;
     }
 
@@ -826,57 +877,57 @@ class ChromeMcpCli {
 
             switch (action.type) {
             case 'read-page':
-                return this.readPage();
+                return await this.readPage();
             case 'list-tabs':
-                return this.listTabs();
+                return await this.listTabs();
             case 'new-tab':
-                return this.openNewTab(action.url);
+                return await this.openNewTab(action.url);
             case 'switch-tab':
-                return this.switchTab(action.target);
+                return await this.switchTab(action.target);
             case 'close-tab':
-                return this.closeTab(action.target);
+                return await this.closeTab(action.target);
             case 'open':
-                return this.openPage(action.url);
+                return await this.openPage(action.url);
             case 'history-back':
-                return this.navigateHistory('back');
+                return await this.navigateHistory('back');
             case 'history-forward':
-                return this.navigateHistory('forward');
+                return await this.navigateHistory('forward');
             case 'reload':
-                return this.reloadPage();
+                return await this.reloadPage();
             case 'click':
-                return this.clickSelector(action.selector);
+                return await this.clickSelector(action.selector, {dialogAction: action.dialogAction});
             case 'type':
-                return this.typeIntoSelector(action.selector, action.text);
+                return await this.typeIntoSelector(action.selector, action.text);
             case 'type-active':
-                return this.typeIntoActiveElement(action.text);
+                return await this.typeIntoActiveElement(action.text);
             case 'submit':
-                return this.submitForm(action.target);
+                return await this.submitForm(action.target);
             case 'title':
-                return this.getTitle();
+                return await this.getTitle();
             case 'wait':
-                return this.waitForText(action.text);
+                return await this.waitForText(action.text);
             case 'wait-url':
-                return this.waitForUrl(action.value);
+                return await this.waitForUrl(action.value);
             case 'wait-text-gone':
-                return this.waitForTextGone(action.text);
+                return await this.waitForTextGone(action.text);
             case 'expect-title':
-                return this.expectTitle(action.value);
+                return await this.expectTitle(action.value);
             case 'expect-url':
-                return this.expectUrl(action.value);
+                return await this.expectUrl(action.value);
             case 'expect-text':
-                return this.expectText(action.value);
+                return await this.expectText(action.value);
             case 'snapshot':
-                return this.snapshotSummary();
+                return await this.snapshotSummary();
             case 'set-viewport':
-                return this.setViewport(action.value);
+                return await this.setViewport(action.value);
             case 'read-viewport':
-                return this.readViewport();
+                return await this.readViewport();
             case 'eval':
-                return this.evaluateScript(action.script);
+                return await this.evaluateScript(action.script, action.dialogAction);
             case 'press':
-                return this.pressKey(action.key);
+                return await this.pressKey(action.key);
             case 'dialog':
-                return this.handleDialog(action.action);
+                return await this.handleDialog(action.action);
             default:
                 throw new Error(`Unknown action type: ${action.type}`);
             }
@@ -1256,8 +1307,20 @@ class ChromeMcpCli {
 
     async snapshotSummary() {
         const snapshot = await this.refreshSnapshot();
-        const elements = parseSnapshotElements(snapshot.text);
-        return `Snapshot: ${elements.length} interactive-ish nodes\n${renderElementSummary(elements.slice(0, 20))}`;
+        return this.formatElements(snapshot.elements || parseSnapshotElements(snapshot.text), 20);
+    }
+
+    formatElements(elements, defaultLimit) {
+        const filtered = this.view.filter
+            ? elements.filter(element => normalizeText(element.line || `${element.role} ${element.name}`).includes(normalizeText(this.view.filter)))
+            : elements;
+        const offset = Math.min(this.view.offset, filtered.length);
+        const limit = this.view.limit ?? (this.view.full ? filtered.length : defaultLimit);
+        const shown = filtered.slice(offset, offset + limit);
+        return [
+            `Elements: total=${elements.length}, matched=${filtered.length}, shown=${shown.length}, offset=${offset}, omitted=${filtered.length - shown.length}`,
+            renderElementSummary(shown) || '(no matching snapshot elements)',
+        ].join('\n');
     }
 
     async setViewport(value) {
@@ -1359,14 +1422,14 @@ class ChromeMcpCli {
         const page = await this.getCurrentPageState();
         const snapshot = await this.refreshSnapshot();
         const elements = snapshot.elements || parseSnapshotElements(snapshot.text || '');
-        const textPreview = redactOutput(normalizeText(page.text)).slice(0, 400);
-
+        const text = redactOutput(page.text);
+        const preview = this.view.full ? text : text.slice(0, this.view.textLimit);
         return [
             `Page: ${page.title || '(no title)'}`,
             `URL: ${page.url || '(unknown)'}`,
-            `Text: ${textPreview || '(empty)'}`,
-            `Elements: ${elements.length}`,
-            renderElementSummary(elements.slice(0, 12)) || '(no snapshot elements)',
+            `Text: ${preview || (text ? '(omitted)' : '(empty)')}`,
+            `Text characters: shown=${preview.length}, omitted=${text.length - preview.length}`,
+            this.formatElements(elements, 12),
         ].join('\n');
     }
 
@@ -1381,15 +1444,14 @@ class ChromeMcpCli {
         });
 
         const payload = unwrapToolResult(result);
-        return payload && typeof payload === 'object'
-            ? payload
-            : {url: '', title: '', text: ''};
+        if (!payload || typeof payload.url !== 'string' || typeof payload.title !== 'string' || typeof payload.text !== 'string') {
+            throw new Error('Invalid page state response from MCP');
+        }
+        return payload;
     }
 
     async refreshSnapshot(verbose = false) {
-        if (!this.hasTool('take_snapshot')) {
-            return {text: '', elements: []};
-        }
+        if (!this.hasTool('take_snapshot')) throw new Error('take_snapshot is unavailable');
 
         const result = await this.callTool('take_snapshot', {verbose});
         const text = extractPlainText(result);
@@ -1565,45 +1627,54 @@ class ChromeMcpCli {
     }
 
     async listConsoleErrors() {
-        if (!this.hasTool('list_console_messages')) {
-            return [];
-        }
-
-        try {
-            const result = await this.callTool('list_console_messages', {
-                types: ['error'],
-                pageSize: 10,
-            });
-            const messages = extractStructuredData(result);
-            return Array.isArray(messages) ? messages : [];
-        } catch (_) {
-            return [];
-        }
+        const result = await this.callTool(this.requireTool('list_console_messages'), {
+            types: ['error'], pageSize: 10,
+        });
+        return extractStructuredData(result) ?? extractPlainText(result);
     }
 
     async enrichError(action, error) {
         const enriched = new Error(error.message);
         enriched.code = error.code;
-        const page = await this.safeGetCurrentPageState();
-        const snapshot = await this.safeRefreshSnapshot();
-        const consoleErrors = await this.listConsoleErrors();
-
-        enriched.data = {
+        const diagnostics = {};
+        const previousTimeout = this.requestTimeoutMs;
+        this.requestTimeoutMs = this.diagnosticTimeoutMs;
+        try {
+            // Diagnose read-only state; never retry the failed action.
+            for (const [name, tool, read] of [
+                ['page', 'evaluate_script', () => this.getCurrentPageState()],
+                ['snapshot', 'take_snapshot', () => this.refreshSnapshot()],
+                ['console', 'list_console_messages', () => this.listConsoleErrors()],
+            ]) {
+                if (!this.hasTool(tool)) {
+                    diagnostics[name] = {status: 'unavailable'};
+                    continue;
+                }
+                try {
+                    let value = sanitizeReport(await read());
+                    if (name === 'page') {
+                        const text = value.text;
+                        value = {...value, text: text.slice(0, 1000), omittedCharacters: Math.max(0, text.length - 1000)};
+                    } else if (name === 'snapshot') {
+                        const lines = value.text.split(/\r?\n/);
+                        value = {text: lines.slice(0, 40).join('\n'), count: value.elements.length, omittedLines: Math.max(0, lines.length - 40)};
+                    } else if (typeof value === 'string') {
+                        value = {text: value.slice(0, 4000), omittedCharacters: Math.max(0, value.length - 4000)};
+                    }
+                    diagnostics[name] = {status: 'ok', value};
+                } catch (diagnosticError) {
+                    diagnostics[name] = {status: 'failed', message: diagnosticError.message};
+                }
+            }
+        } finally {
+            this.requestTimeoutMs = previousTimeout;
+        }
+        enriched.data = sanitizeReport({
             ...(error.data ? {cause: error.data} : {}),
-            action,
-            page,
-            snapshotPreview: snapshot.text ? snapshot.text.split(/\r?\n/).slice(0, 40).join('\n') : '',
-            snapshotMatches: action.selector
-                ? findSnapshotMatches(snapshot.elements, action.selector, inferTargetOptions(action)).slice(0, 5).map(match => ({
-                    score: match.score,
-                    uid: match.element.uid,
-                    role: match.element.role,
-                    name: match.element.name,
-                    line: match.element.line,
-                }))
-                : [],
-            consoleErrors,
-        };
+            action: describeAction(action),
+            pageId: this.currentPageId,
+            diagnostics,
+        });
         return enriched;
     }
 
@@ -1612,14 +1683,6 @@ class ChromeMcpCli {
             return await this.getCurrentPageState();
         } catch (_) {
             return {url: '', title: '', text: ''};
-        }
-    }
-
-    async safeRefreshSnapshot() {
-        try {
-            return await this.refreshSnapshot();
-        } catch (_) {
-            return this.latestSnapshot || {text: '', elements: []};
         }
     }
 
@@ -2838,6 +2901,8 @@ function renderUsage() {
         '  node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then click Dashboard then reload then read page"',
         '',
         'Options:',
+        '  --full / --offset N / --limit N / --text-limit N / --filter TEXT',
+        '  --output PATH (save a redacted JSON report; existing files are never overwritten)',
         '  --stdin (read instructions from standard input; avoids input values in argv)',
         '  --debug',
         '  --show-tools',
@@ -2859,6 +2924,14 @@ function renderUsage() {
 async function main() {
     let options;
     let client = null;
+    let reportFd = null;
+    const report = {status: 'running', steps: []};
+    const saveReport = () => {
+        if (reportFd === null) return;
+        const contents = JSON.stringify(sanitizeReport(report), null, 2) + '\n';
+        fs.writeSync(reportFd, contents, 0, 'utf8');
+        fs.ftruncateSync(reportFd, Buffer.byteLength(contents));
+    };
     try {
         options = parseArgs(process.argv.slice(2));
         if (options.stdin) {
@@ -2877,6 +2950,10 @@ async function main() {
                 if (['type', 'type-active'].includes(action.type)) rememberInput(action.text);
             }
         }
+        if (options.outputPath !== null) {
+            reportFd = fs.openSync(options.outputPath, 'wx', 0o600);
+            saveReport();
+        }
         const runtime = await prepareRuntime(options);
 
         client = new McpStdioClient({
@@ -2889,17 +2966,31 @@ async function main() {
 
         if (options.showTools || options.showToolSchemas) {
             writeOutput('log', options.showToolSchemas ? renderToolSchemas(client.tools) : renderToolNames(client.tools));
+            report.status = 'succeeded';
+            saveReport();
             return;
         }
 
         const cli = new ChromeMcpCli(client, {
             debug: options.debug,
             browserUrl: runtime.browserUrl,
+            view: options.view,
+            onResult: record => {
+                report.steps.push(record);
+                saveReport();
+                const span = record.step === record.throughStep ? record.step : `${record.step}-${record.throughStep}`;
+                writeOutput(record.status === 'failed' ? 'error' : 'log', `[${span}/${record.total}] ${record.status} ${record.action.type} (${record.durationMs} ms)`);
+                if (record.output !== undefined) writeOutput('log', record.output);
+            },
         });
         await cli.initializeSession();
-        const outputs = await cli.executeInstruction(options.instruction);
-        writeOutput('log', outputs.join('\n'));
+        await cli.executeInstruction(options.instruction);
+        report.status = 'succeeded';
+        saveReport();
     } catch (error) {
+        report.status = 'failed';
+        report.error = {message: error.message, code: error.code, context: error.data};
+        try { saveReport(); } catch (saveError) { writeOutput('error', 'Failed to save report:', saveError.message); }
         writeOutput('error', '[error]', error.message);
         if (error.code) {
             writeOutput('error', '[error] code:', error.code);
@@ -2909,6 +3000,7 @@ async function main() {
         }
         process.exitCode = 1;
     } finally {
+        if (reportFd !== null) fs.closeSync(reportFd);
         if (client) {
             await client.close().catch(closeError => {
                 writeOutput('error', '[error] failed to close MCP client:', closeError.message);
