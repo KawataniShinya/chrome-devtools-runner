@@ -19,10 +19,11 @@ Use the bundled runner script for browser-driven validation.
    `node <skill-directory>/scripts/chrome-devtools-runner.js ...`
    Use the directory containing this `SKILL.md`; do not assume a repository-local copy or root-level shim exists.
 2. On first installation or after dependency changes, run `npm ci --ignore-scripts` in this skill directory. Node.js must satisfy `^20.19.0 || ^22.12.0 || >=23`. The default server is local chrome-devtools-mcp 1.10.1, pinned by package-lock.json; missing/mismatched installation fails before browser startup. Explicit server overrides bypass this check.
-3. Default mode lets `chrome-devtools-mcp` manage Chrome.
-4. Use `--browser-url http://127.0.0.1:9222` to connect to an existing CDP instance.
-5. Use `--ensure-cdp` to start Chrome with CDP if it is not already running.
-6. `--ensure-cdp` now uses an auto-created temporary Chrome profile by default, which is more stable than reusing a fixed profile directory.
+3. Default mode (also `--isolated`) launches an independent Chrome with a temporary profile and keeps its window open after the runner exits. The runner prints the CDP URL for reconnection; reconnect only when requested, selecting a tab explicitly. Do not close the browser unless requested. No manual Chrome debugging setup is needed; login state is not inherited.
+4. Only when the user explicitly requests their existing Chrome, explain how to enable remote debugging and approve the connection before using `--existing`. This mode first probes the configured CDP endpoint (default 127.0.0.1:9222). It uses normal CDP or the consent-gated WebSocket for a local HTTP 404; otherwise it uses MCP `--autoConnect` for Chrome stable. Chrome 144+ must have remote debugging enabled at `chrome://inspect/#remote-debugging`; the user may need to approve Chrome's connection prompt. Do not change this setting automatically.
+5. Use `--browser-url http://127.0.0.1:9222` for a known HTTP CDP endpoint, or `--ws-endpoint ws://127.0.0.1:9222/devtools/browser` for Chrome approval mode. HTTP 404 in approval mode does not mean the setting is disabled. Existing modes never launch another browser on failure; inspect the connection hint instead.
+6. `--ensure-cdp` retains the legacy behavior of starting Chrome if its endpoint is unavailable. Prefer the explicit existing/isolated modes for new workflows.
+7. Existing modes display connection information and tabs but begin with no runner target. Before any page read or operation, use `switch tab <exact URL or numeric ID>`. Duplicate URLs fail; choose an ID. Positional aliases and partial matches are rejected. After `new tab` or closing a tab, select the next target explicitly.
 
 ## Preferred usage
 
@@ -34,7 +35,7 @@ Use the bundled runner script for browser-driven validation.
 - An explicit `submit <selector>` must resolve to exactly one element belonging to a form. Without a target, the focused form is used, or the only form on the page. Missing, ambiguous, and invalid forms fail without falling back to another form.
 - For web-app checks, verify both action success and visible outcome.
 - When a flow is asynchronous, add `wait` and `expect` steps instead of relying on timing assumptions.
-- When a request only says "confirm in browser" or similar, default to `open`, `read page`, `click`, `type`, `submit`, `back`, `forward`, `reload`, `wait`, `expect`, and finish with a short user-visible summary.
+- When a request only says "confirm in browser" or similar, use the default independent Chrome; connect to existing Chrome only when the user explicitly requests it, then use `open`, `read page`, `click`, `type`, `submit`, `back`, `forward`, `reload`, `wait`, `expect`, and finish with a short user-visible summary.
 - When verifying responsive layouts, use `set viewport` and `read viewport` to switch between desktop and mobile widths before checking the visible result.
 - `set viewport` is session-level state: after switching or opening tabs, the runner reapplies the last viewport so mobile checks stay stable across navigation.
 - When a destructive action opens a native browser confirmation dialog, use `accept dialog` or `dismiss dialog` explicitly instead of assuming the page will continue.
@@ -50,12 +51,12 @@ Use the bundled runner script for browser-driven validation.
 
 ## Examples
 
-- `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp --stdin` (send the login instruction through standard input)
-- `node <skill-directory>/scripts/chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "open http://localhost:3000/admin then snapshot"`
-- `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp "new tab https://example.com then list tabs then switch tab 1 then read page"`
-- `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then 画面を確認して"`
-- `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then click Dashboard then back then forward then reload then read page"`
-- `node <skill-directory>/scripts/chrome-devtools-runner.js --ensure-cdp "set viewport mobile then open http://localhost:3000 then read viewport then read page"`
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --isolated --stdin` (send the login instruction through standard input)
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "list tabs then switch tab http://localhost:3000/admin then snapshot"`
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --existing "new tab https://example.com then list tabs then switch tab 1 then read page"`
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --isolated "open http://localhost:3000 then 画面を確認して"`
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --isolated "open http://localhost:3000 then click Dashboard then back then forward then reload then read page"`
+- `node <skill-directory>/scripts/chrome-devtools-runner.js --isolated "set viewport mobile then open http://localhost:3000 then read viewport then read page"`
 
 ## Resources
 

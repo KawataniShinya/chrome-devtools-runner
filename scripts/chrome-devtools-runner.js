@@ -4,18 +4,19 @@
  * Generic MCP client for chrome-devtools-mcp over stdio.
  *
  * Usage:
- *   node chrome-devtools-runner.js "open https://example.com"
- *   node chrome-devtools-runner.js "click Login"
- *   node chrome-devtools-runner.js "type Email test@example.com"
- *   node chrome-devtools-runner.js "submit"
- *   node chrome-devtools-runner.js --debug "open https://example.com then title"
+ *   node chrome-devtools-runner.js --isolated "open https://example.com"
+ *   node chrome-devtools-runner.js --existing "list tabs then switch tab 1 then click Login"
+ *   node chrome-devtools-runner.js --existing "switch tab 1 then type Email test@example.com"
+ *   node chrome-devtools-runner.js --existing "switch tab 1 then submit"
+ *   node chrome-devtools-runner.js --isolated --debug "open https://example.com then title"
  *   node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then click Dashboard then back then forward"
- *   node chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "title"
+ *   node chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "list tabs then switch tab 1 then title"
  *
  * Notes:
  * - stdio MCP requires the client to own the server process. This script starts
  *   the server command locally and talks JSON-RPC over stdio.
- * - By default, chrome-devtools-mcp starts and manages Chrome itself.
+ * - By default, launch an independent Chrome with a temporary profile.
+ * - Use --isolated to launch Chrome with a fresh temporary profile.
  * - Use --browser-url to connect to a running Chrome DevTools Protocol endpoint.
  * - Use --ensure-cdp to start Chrome with CDP when the endpoint is not running.
  * - Override the server command with MCP_SERVER_COMMAND if needed.
@@ -81,7 +82,9 @@ function parseArgs(argv) {
     let timeoutMs = DEFAULT_TIMEOUT_MS;
     let serverCommand = process.env.MCP_SERVER_COMMAND || null;
     let browserUrl = null;
+    let wsEndpoint = null;
     let ensureCdp = false;
+    let browserMode = null;
     let cdpHost = DEFAULT_CDP_HOST;
     let cdpPort = DEFAULT_CDP_PORT;
     let cdpStartupTimeoutMs = DEFAULT_CDP_STARTUP_TIMEOUT_MS;
@@ -94,6 +97,14 @@ function parseArgs(argv) {
     while (args.length > 0) {
         const rawValue = args.shift();
         const {name: value, inlineValue} = splitOption(rawValue);
+
+        if (value === '--existing' || value === '--isolated') {
+            const mode = value === '--existing' ? 'existing' : 'isolated';
+            if (browserMode && browserMode !== mode) throw new Error('Choose either --existing or --isolated.');
+            if (inlineValue !== null) throw new Error(`${value} does not take a value.`);
+            browserMode = mode;
+            continue;
+        }
 
         if (value === '--full') {
             view.full = true;
@@ -149,6 +160,14 @@ function parseArgs(argv) {
             continue;
         }
 
+        if (value === '--ws-endpoint') {
+            if (!hasOptionValue(inlineValue, args)) throw new Error('Missing value for --ws-endpoint');
+            wsEndpoint = takeOptionValue(inlineValue, args);
+            const endpoint = new URL(wsEndpoint);
+            if (!['ws:', 'wss:'].includes(endpoint.protocol)) throw new Error('--ws-endpoint must use ws: or wss:');
+            continue;
+        }
+
         if (value === '--ensure-cdp') {
             ensureCdp = true;
             continue;
@@ -192,7 +211,17 @@ function parseArgs(argv) {
         instructionParts.push(rawValue);
     }
 
+    if (wsEndpoint && (browserUrl || ensureCdp || browserMode === 'isolated' || serverCommand)) throw new Error('--ws-endpoint cannot be combined with --browser-url, --ensure-cdp, --isolated or a custom server.');
+    if (browserMode && ensureCdp) throw new Error('--ensure-cdp cannot be combined with --existing or --isolated.');
+    if (browserMode === 'isolated' && browserUrl) throw new Error('--isolated cannot be combined with --browser-url.');
+    if (browserMode && (chromeUserDataDir || reuseChromeProfile)) throw new Error('Explicit browser modes cannot use --chrome-user-data-dir or --reuse-chrome-profile.');
+    if (browserMode && serverCommand) throw new Error('Explicit browser modes cannot be combined with a custom MCP server command.');
+    browserMode ||= ensureCdp ? 'ensure-cdp' : (browserUrl || wsEndpoint) ? 'existing' : serverCommand ? 'custom' : 'isolated';
+    if (browserMode === 'isolated' && (chromeUserDataDir || reuseChromeProfile)) throw new Error('Isolated mode uses a temporary profile. Use --ensure-cdp for a persistent profile.');
+    if (browserMode === 'existing' && (chromePath || chromeUserDataDir || reuseChromeProfile)) throw new Error('Existing mode does not launch Chrome. Use --ensure-cdp for launch/profile options.');
+
     return {
+        browserMode,
         debug,
         stdin,
         view,
@@ -206,6 +235,7 @@ function parseArgs(argv) {
             : DEFAULT_CDP_STARTUP_TIMEOUT_MS,
         serverCommand,
         browserUrl,
+        wsEndpoint,
         ensureCdp,
         cdpHost,
         chromePath,
@@ -528,6 +558,8 @@ class ChromeMcpCli {
         this.latestSnapshot = null;
         this.currentPageId = null;
         this.currentPageIndex = null;
+        this.requireExplicitTab = Boolean(options.requireExplicitTab);
+        this.explicitTabSelected = false;
         this.currentViewport = null;
         this.view = {full: false, offset: 0, limit: null, textLimit: 400, filter: '', ...options.view};
         this.onResult = options.onResult || null;
@@ -563,6 +595,10 @@ class ChromeMcpCli {
     }
 
     async initializeSession() {
+        if (this.requireExplicitTab) {
+            // list_pages verifies the browser connection without selecting a user's tab.
+            return await this.listTabs();
+        }
         await this.autoSelectPageContext().catch(error => {
             this.logDebug('failed to auto-select page context:', error.message);
         });
@@ -869,6 +905,9 @@ class ChromeMcpCli {
     }
 
     async executeAction(action) {
+        if (this.requireExplicitTab && !this.explicitTabSelected && !['list-tabs', 'switch-tab', 'new-tab'].includes(action.type)) {
+            throw new Error('No explicitly selected tab. Use list tabs then switch tab <exact URL or ID> before reading or operating an existing browser.');
+        }
         try {
             if (!['open', 'new-tab', 'switch-tab', 'close-tab', 'list-tabs', 'dialog'].includes(action.type)) {
                 await this.ensureSelectedPageContext();
@@ -931,11 +970,18 @@ class ChromeMcpCli {
                 throw new Error(`Unknown action type: ${action.type}`);
             }
         } catch (error) {
+            if (this.requireExplicitTab && !this.explicitTabSelected) throw error;
             throw await this.enrichError(action, error);
         }
     }
 
     async openPage(url) {
+        if (this.requireExplicitTab) {
+            await this.ensureSelectedPageContext();
+            await this.callTool(this.requireTool('navigate_page'), {type: 'url', url});
+            this.latestSnapshot = null;
+            return `Opened ${url}`;
+        }
         const listPagesTool = this.hasTool('list_pages') ? 'list_pages' : null;
         const navigateTool = this.hasTool('navigate_page') ? 'navigate_page' : null;
         const selectPageTool = this.hasTool('select_page') ? 'select_page' : null;
@@ -1054,6 +1100,14 @@ class ChromeMcpCli {
     }
 
     async openNewTab(url) {
+        if (this.requireExplicitTab) {
+            this.explicitTabSelected = false;
+            this.currentPageId = null;
+            this.currentPageIndex = null;
+            this.latestSnapshot = null;
+            await this.callTool(this.requireTool('new_page'), {url});
+            return `Opened new tab ${url}. Use list tabs then switch tab <exact URL or ID> to select it.`;
+        }
         const tool = this.requireTool('new_page');
         const previousPages = this.hasTool('list_pages') ? await this.listPages().catch(() => []) : [];
         await this.callTool(tool, {url});
@@ -1761,13 +1815,20 @@ class ChromeMcpCli {
     }
 
     async switchTab(target) {
+        if (this.requireExplicitTab && /^(current|first|last)$/i.test(String(target))) {
+            throw new Error('Select an existing tab by exact URL or ID, not current/first/last.');
+        }
         const pages = await this.listPages();
+        if (this.requireExplicitTab && !/^\d+$/.test(String(target)) && !pages.some(page => page.url === target)) {
+            throw new Error('Existing mode requires an exact tab URL or numeric ID. Use list tabs.');
+        }
         const page = findPageByTarget(pages, target, this.currentPageId, this.currentPageIndex);
         if (!page) {
             throw new Error(`Tab not found: ${target}`);
         }
 
         await this.selectPage(page, true);
+        this.explicitTabSelected = true;
         await this.waitForSelectedPage(page).catch(error => {
             this.logDebug('selected tab verification failed:', error.message);
         });
@@ -1776,6 +1837,7 @@ class ChromeMcpCli {
     }
 
     async closeTab(target = 'current') {
+        this.explicitTabSelected = false;
         const tool = this.requireTool('close_page');
         const pages = await this.listPages();
         const page = findPageByTarget(pages, target, this.currentPageId, this.currentPageIndex);
@@ -2417,10 +2479,11 @@ function findPageByTarget(pages, target, currentPageId = null, currentPageIndex 
             || null;
     }
 
+    const exact = pages.filter(page => page.url === normalizedTarget || page.title === normalizedTarget);
     const needle = normalizeText(normalizedTarget);
-    return pages.find(page => normalizeText(page.title).includes(needle))
-        || pages.find(page => normalizeText(page.url).includes(needle))
-        || null;
+    const matches = exact.length ? exact : pages.filter(page => normalizeText(page.title).includes(needle) || normalizeText(page.url).includes(needle));
+    if (matches.length > 1) throw new Error('Multiple tabs match. Use list tabs and select a unique tab ID.');
+    return matches[0] || null;
 }
 
 function samePageRef(left, right) {
@@ -2573,6 +2636,52 @@ async function prepareRuntime(options) {
         runtime.browserUrl = normalizeBrowserUrl(runtime.browserUrl);
     }
 
+    // Resolve the pinned dependency before probing the browser or launching processes.
+    buildServerCommand(runtime);
+    if (runtime.browserMode === 'existing' && !runtime.browserUrl && !runtime.wsEndpoint) {
+        const candidate = `http://${runtime.cdpHost}:${runtime.cdpPort}`;
+        try {
+            const version = await getCdpVersion(candidate);
+            if (typeof version.webSocketDebuggerUrl === 'string') runtime.browserUrl = candidate;
+        } catch (error) {
+            // Chrome approval mode hides HTTP discovery but exposes the consent-gated
+            // /devtools/browser WebSocket. Never retry after consent is denied.
+            if (error.message === 'HTTP 404' && ['127.0.0.1', 'localhost'].includes(runtime.cdpHost)) {
+                runtime.wsEndpoint = `ws://${runtime.cdpHost}:${runtime.cdpPort}/devtools/browser`;
+            }
+        }
+    }
+    if (runtime.browserMode === 'isolated') {
+        const chromePath = runtime.chromePath || defaultChromePath();
+        ensureChromeExecutable(chromePath);
+        runtime.chromeUserDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-devtools-runner-'));
+        const child = launchChromeForCdp({chromePath, cdpPort: 0, userDataDir: runtime.chromeUserDataDir, logFile: runtime.chromeLogFile});
+        runtime.chromePid = child.pid;
+        let launchError;
+        child.once('error', error => { launchError = error; });
+        const deadline = Date.now() + runtime.cdpStartupTimeoutMs;
+        try {
+            while (Date.now() < deadline) {
+                if (launchError) throw launchError;
+                if (child.exitCode !== null || child.signalCode !== null) throw new Error('Chrome exited before CDP became available.');
+                const activePort = path.join(runtime.chromeUserDataDir, 'DevToolsActivePort');
+                if (fs.existsSync(activePort)) {
+                    const port = Number(fs.readFileSync(activePort, 'utf8').split('\n')[0]);
+                    if (Number.isInteger(port) && port > 0 && port <= 65535) {
+                        runtime.browserUrl = `http://127.0.0.1:${port}`;
+                        break;
+                    }
+                }
+                await delay(100);
+            }
+            if (!runtime.browserUrl) throw new Error('Timed out waiting for the new Chrome debugging port.');
+            await waitForCdp(runtime.browserUrl, runtime.cdpStartupTimeoutMs, child, runtime.chromeLogFile, chromePath);
+        } catch (error) {
+            if (child.pid) child.kill();
+            throw error;
+        }
+        writeOutput('log', `[browser] New Chrome will remain open after this run. Reconnect with --browser-url ${runtime.browserUrl} and explicitly select a tab.`);
+    }
     runtime.serverCommand = buildServerCommand(runtime);
 
     if (runtime.ensureCdp) {
@@ -2615,6 +2724,13 @@ function buildServerCommand(options = {}) {
             throw new Error(`Pinned chrome-devtools-mcp ${expectedVersion} is not installed. Run npm ci --ignore-scripts in ${skillDirectory}.`);
         }
         command = `${quoteShellArg(process.execPath)} ${quoteShellArg(entryPoint)}`;
+    }
+
+    if (options.browserMode === 'existing' && !options.browserUrl && !options.wsEndpoint) command += ' --autoConnect';
+    if (options.wsEndpoint) command += ` --wsEndpoint ${quoteShellArg(options.wsEndpoint)}`;
+    if (options.browserMode === 'isolated' && !options.browserUrl) {
+        command += ' --isolated';
+        if (options.chromePath) command += ` --executablePath ${quoteShellArg(options.chromePath)}`;
     }
 
     if (options.browserUrl && !/\s--browser-?url(?:=|\s)|\s--browserUrl(?:=|\s)/.test(` ${command} `)) {
@@ -2907,16 +3023,18 @@ function renderUsage() {
     return [
         'Usage: node chrome-devtools-runner.js [options] "<instruction>"',
         '',
-        'Default mode: let chrome-devtools-mcp start/manage Chrome.',
-        '  node chrome-devtools-runner.js "open https://example.com then click Login then submit then read page"',
+        'Default mode: launch a fresh Chrome; use --existing only when explicitly requested.',
+        '  node chrome-devtools-runner.js --isolated "open https://example.com then read page"',
         '',
         'CDP mode: connect to an existing Chrome DevTools Protocol endpoint.',
-        '  node chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "title"',
+        '  node chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "list tabs then switch tab 1 then title"',
         '',
         'Managed CDP mode: start Chrome with CDP if the endpoint is not running.',
         '  node chrome-devtools-runner.js --ensure-cdp "open http://localhost:3000 then click Dashboard then reload then read page"',
         '',
         'Options:',
+        '  --existing (connect to running Chrome; requires remote debugging and Chrome approval)',
+        '  --isolated (default: launch an independent Chrome with a temporary profile)',
         '  --full / --offset N / --limit N / --text-limit N / --filter TEXT',
         '  --output PATH (save a redacted JSON report; existing files are never overwritten)',
         '  --stdin (read instructions from standard input; avoids input values in argv)',
@@ -2926,6 +3044,7 @@ function renderUsage() {
         '  --timeout <ms>',
         '  --server-command <command>',
         '  --browser-url <url>',
+        '  --ws-endpoint <ws://...> (explicit browser WebSocket; Chrome approval is preserved)',
         '  --ensure-cdp',
         '  --cdp-host <host>                 default: 127.0.0.1',
         '  --cdp-port <port>                 default: 9222',
@@ -2971,6 +3090,13 @@ async function main() {
             saveReport();
         }
         const runtime = await prepareRuntime(options);
+        const connection = {mode: runtime.browserMode, endpoint: runtime.wsEndpoint || runtime.browserUrl || (runtime.browserMode === 'existing' ? 'autoConnect (running Chrome stable)' : runtime.browserMode === 'isolated' ? 'new temporary Chrome profile' : runtime.browserMode)};
+        report.connection = connection;
+        saveReport();
+        writeOutput('log', `[browser] mode=${connection.mode} target=${connection.endpoint}`);
+        if (runtime.browserMode === 'existing') {
+            writeOutput('log', '[browser] Chrome 144+: enable remote debugging at chrome://inspect/#remote-debugging and approve the Chrome connection prompt. No new Chrome will be launched.');
+        }
 
         client = new McpStdioClient({
             command: runtime.serverCommand,
@@ -2991,6 +3117,7 @@ async function main() {
             debug: options.debug,
             browserUrl: runtime.browserUrl,
             view: options.view,
+            requireExplicitTab: runtime.browserMode === 'existing',
             onResult: record => {
                 report.steps.push(record);
                 saveReport();
@@ -2999,7 +3126,20 @@ async function main() {
                 if (record.output !== undefined) writeOutput('log', record.output);
             },
         });
-        await cli.initializeSession();
+        try {
+            const tabs = await cli.initializeSession();
+            if (runtime.browserMode === 'existing') {
+                writeOutput('log', '[browser] Connected. Runner target: none (explicit selection required).');
+                writeOutput('log', tabs);
+            }
+        } catch (error) {
+            const hint = runtime.wsEndpoint
+                ? 'Verify the WebSocket endpoint and approve the Chrome connection prompt.'
+                : runtime.browserUrl
+                ? 'Verify Chrome is running with CDP enabled and --browser-url points to its endpoint. For Chrome approval mode (HTTP 404), use --existing or --ws-endpoint ws://127.0.0.1:9222/devtools/browser.'
+                : 'Use Chrome 144+ stable, enable chrome://inspect/#remote-debugging, and approve the Chrome prompt.';
+            throw new Error(`Browser connection failed: ${error.message}. ${hint} To start an independent browser, use --isolated. No automatic fallback was attempted.`);
+        }
         await cli.executeInstruction(options.instruction);
         report.status = 'succeeded';
         saveReport();
@@ -3027,4 +3167,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = {ChromeMcpCli, McpStdioClient, parseArgs, splitInstructions, redactOutput, rememberInput, buildServerCommand};
+module.exports = {ChromeMcpCli, McpStdioClient, parseArgs, splitInstructions, redactOutput, rememberInput, buildServerCommand, prepareRuntime};
