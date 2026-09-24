@@ -285,7 +285,7 @@ Elements: 12
 追加パッケージやChromeなしで実行できます。
 
 ```bash
-node --test --test-concurrency=1 tests/runner.test.js
+node --test --test-concurrency=1 tests/*.test.js
 ```
 
 `tests/fixtures/browser.html` は業務データを更新せずブラウザで入力・曖昧なクリック・フォーム送信を確認するためのページです。
@@ -401,3 +401,32 @@ node scripts/chrome-devtools-runner.js --ensure-cdp \
 ## ライセンス
 
 MIT。詳細は [LICENSE](LICENSE) を参照してください。
+
+
+## 画面取得・診断・操作結果
+
+各操作が終わるたびに `[手順番号/総数] succeeded|failed 操作名 (所要時間)` と結果を出力します。途中で失敗しても先行結果は残り、後続操作は実行しません。クリックと直後のダイアログ応答は1つの操作として処理し、手順番号を範囲で表示します。`succeeded` は命令の完了を示すため、期待する画面状態は `expect` で別途確認してください。
+
+画面取得のオプションは `read page` / `snapshot` に適用します。
+
+| オプション | 内容 |
+|---|---|
+| `--full` | 取得したページ本文と要素を全件表示 |
+| `--filter TEXT` | 要素のテキスト表現を部分一致で絞り込み（大文字小文字を区別しない） |
+| `--offset N` | 絞り込み後の要素を0始まりで指定 |
+| `--limit N` | 要素の表示件数。指定時は `--full` より優先 |
+| `--text-limit N` | ページ本文の表示文字数。既定400。`--full` 指定時は制限しない |
+| `--output PATH` | 操作結果をJSON保存。既存ファイルは上書きせず、ブラウザ操作前にエラー |
+
+例（スキルディレクトリで実行）:
+
+```bash
+node scripts/chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 --full --output /tmp/browser-check.json "read page then expect text Dashboard"
+node scripts/chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 --filter button --offset 0 --limit 10 "snapshot"
+```
+
+本文と要素には表示件数・省略件数を明示します。`--filter` はページ本文のフィルタではありません。本文は表示テキストを基に空白を正規化したもので、HTMLソースではありません。
+
+JSONには全体の `status`、各手順の `step` / `throughStep` / `status` / `durationMs` / `action` / `output` を保存します。失敗した手順には `error.context` として対象タブ・操作・診断情報を記録します。各手順後に更新するため途中失敗時の先行結果も残ります。ファイルは所有者のみ読み書きできる権限で作成します。同一実行中に入力した値は秘匿しますが、ページに元から存在する情報全般を秘匿する機能ではありません。
+
+非同期エラーにも診断を付加し、ページ・スナップショット・コンソールそれぞれを `ok` / `unavailable` / `failed` と区別します。診断が失敗しても元のエラーを保持し、古いスナップショットを現在の状態として扱いません。診断の追加待機は各ツール最大1.5秒です。出力量を抑えるため診断本文は1,000文字、スナップショットは40行、文字列形式のコンソール情報は4,000文字までとし、省略数を示します。診断のために失敗操作を再実行することはありません。

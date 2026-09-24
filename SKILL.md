@@ -40,6 +40,10 @@ Use the bundled runner script for browser-driven validation.
 - When using `--ensure-cdp`, prefer the default temporary profile unless the task explicitly needs a persistent browser state. Use `--reuse-chrome-profile` only when persistence is intentional.
 - Use `--show-tool-schemas` when MCP tool argument behavior changes or needs confirmation.
 - Links may open a new tab. Use `list tabs`, then `switch tab <ID or URL>` before reading or asserting the destination. A successful click alone does not verify navigation.
+- `read page` and `snapshot` show omitted counts. Use `--full` for all collected text/elements, or `--filter TEXT --offset N --limit N` for a slice of matching elements. `--text-limit N` controls the default page-text preview. Filters are literal, case-insensitive, and apply to elements, not page text.
+- Results are printed after each completed action. If a later action fails, earlier results remain visible and subsequent actions are not executed. A `succeeded` action means the command completed; use `expect` to verify the intended visible outcome.
+- Use `--output <new-file.json>` to save a redacted JSON report updated after each result, including failure context. Existing files are refused before browser operations. Reports are created with owner-only permissions and still contain page data not covered by input masking; save them only to an appropriate location.
+- Error diagnostics distinguish successful reads, unavailable tools, and failed reads of page/snapshot/console state. Each diagnostic request has a 1.5-second timeout. Do not treat missing diagnostics as an empty page or retry a mutation just because verification failed.
 - Tool errors must be reported as failures; an empty snapshot is not evidence that the page loaded successfully.
 - Treat `open` as the entry point for initial pages and direct-link/deep-link checks. For normal in-app navigation, prefer clicking links/buttons, submitting forms, and using browser history actions.
 
