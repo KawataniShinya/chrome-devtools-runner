@@ -2,12 +2,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
-const {ChromeMcpCli, McpStdioClient, buildServerCommand} = require('../../scripts/chrome-devtools-runner');
+const {ChromeMcpCli, McpStdioClient, buildServerCommand, parseArgs} = require('../../scripts/chrome-devtools-runner');
 const version = require('../../package.json').dependencies['chrome-devtools-mcp'];
 
 test('pinned MCP and isolated Chrome execute safe browser flows', {timeout: 90000}, async () => {
     assert.ok(!process.env.MCP_SERVER_COMMAND, 'Unset MCP_SERVER_COMMAND for the isolated browser test');
-    const client = new McpStdioClient({command: `${buildServerCommand({serverCommand: ''})} --headless --isolated --no-usage-statistics --no-performance-crux`});
+    const client = new McpStdioClient({command: `${buildServerCommand(parseArgs(['list tabs']))} --headless --no-usage-statistics --no-performance-crux`});
     try {
         await client.start();
         assert.equal(client.serverInfo.version, version);
