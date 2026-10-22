@@ -23,6 +23,12 @@ test('pinned MCP and isolated Chrome execute safe browser flows', {timeout: 9000
         assert.match(counters, /0,1,0/);
         await cli.executeInstruction('set viewport mobile then read viewport then snapshot then read page');
         assert.ok(cli.results.every(result => result.status === 'succeeded'));
+        await cli.executeInstruction('click "Confirm dialog" then read page');
+        assert.equal(cli.results.length, 1);
+        assert.equal(cli.results[0].status, 'awaiting-dialog');
+        await cli.executeInstruction('dismiss dialog then expect text dismissed');
+        await cli.executeInstruction('click "Confirm dialog" then accept dialog then expect text accepted');
+
     } finally {
         await client.close();
     }

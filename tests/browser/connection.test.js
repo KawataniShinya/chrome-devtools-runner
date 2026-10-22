@@ -48,6 +48,14 @@ test('existing CDP reconnects without navigating another tab; missing target sto
         const tabs = await (await fetch(`${endpoint}/json/list`)).json();
         assert.equal(tabs.filter(tab => tab.type === 'page').length, 1);
         assert.equal(tabs.find(tab => tab.type === 'page').url, fixture);
+        const reportFile = path.join(profile, 'dialog-report.json');
+        const pending = await run([...args, '--output', reportFile, `switch tab ${fixture} then click "Confirm dialog" then read page`]);
+        assert.equal(pending.code, 0, pending.stderr);
+        assert.match(pending.stdout, /awaiting-dialog/);
+        const report = JSON.parse(fs.readFileSync(reportFile, 'utf8'));
+        assert.equal(report.status, 'awaiting-dialog');
+        assert.equal(report.steps.length, 2);
+        assert.equal(report.steps[1].status, 'awaiting-dialog');
         // Closing the MCP connection must not close the externally managed Chrome.
         chrome.kill('SIGTERM');
         await exited;
