@@ -868,6 +868,7 @@ class ChromeMcpCli {
 
     async executeInstruction(instruction) {
         const actions = this.parseInstruction(instruction);
+        this.pendingDialog = false;
         for (const action of actions) {
             if (['type', 'type-active'].includes(action.type)) rememberInput(action.text);
         }
@@ -892,7 +893,7 @@ class ChromeMcpCli {
                 throughStep: i + 1,
                 total: actions.length,
                 action: describeAction(action),
-                status: failure ? 'failed' : 'succeeded',
+                status: failure ? 'failed' : this.pendingDialog ? 'awaiting-dialog' : 'succeeded',
                 durationMs: Date.now() - startedAt,
                 ...(failure ? {error: {message: failure.message, code: failure.code, context: failure.data}} : {output}),
             });
@@ -900,6 +901,7 @@ class ChromeMcpCli {
             if (this.onResult) await this.onResult(record);
             if (failure) throw failure;
             outputs.push(output);
+            if (this.pendingDialog) break;
         }
         return outputs;
     }
@@ -1129,11 +1131,25 @@ class ChromeMcpCli {
         const resolved = await this.resolveSnapshotTarget(selector, {mode: 'click'});
         if (resolved) {
             const tool = this.requireTool('click');
-            await this.callTool(tool, {
+            const result = await this.callTool(tool, {
                 uid: resolved.uid,
-                includeSnapshot: true,
+                includeSnapshot: false,
             });
-            await this.refreshSnapshot();
+            const dialog = extractStructuredData(result)?.dialog;
+            if (dialog || /# Open dialog\b/.test(extractPlainText(result))) {
+                this.pendingDialog = true;
+                this.latestSnapshot = null;
+                return `Clicked ${resolved.description}; awaiting dialog. Respond to the dialog before reconnecting; for a planned confirmation, use click followed by accept dialog or dismiss dialog in one instruction. Do not repeat the click.`;
+            }
+            try {
+                await this.refreshSnapshot();
+            } catch (error) {
+                // The click succeeded. A dialog may open between the response and snapshot.
+                if (!/# Open dialog\b/.test(error.message)) throw error;
+                this.pendingDialog = true;
+                this.latestSnapshot = null;
+                return `Clicked ${resolved.description}; awaiting dialog. Respond to the dialog before reconnecting; for a planned confirmation, use click followed by accept dialog or dismiss dialog in one instruction. Do not repeat the click.`;
+            }
             return `Clicked ${resolved.description}`;
         }
 
@@ -1288,6 +1304,7 @@ class ChromeMcpCli {
         }
 
         await this.callTool(tool, payload);
+        this.pendingDialog = false;
         this.latestSnapshot = null;
         return `Dialog ${action}ed`;
     }
@@ -3138,10 +3155,10 @@ async function main() {
                 : runtime.browserUrl
                 ? 'Verify Chrome is running with CDP enabled and --browser-url points to its endpoint. For Chrome approval mode (HTTP 404), use --existing or --ws-endpoint ws://127.0.0.1:9222/devtools/browser.'
                 : 'Use Chrome 144+ stable, enable chrome://inspect/#remote-debugging, and approve the Chrome prompt.';
-            throw new Error(`Browser connection failed: ${error.message}. ${hint} To start an independent browser, use --isolated. No automatic fallback was attempted.`);
+            throw new Error(`Browser connection failed: ${error.message}. If a JavaScript dialog is open, respond to it in Chrome before reconnecting; do not repeat the preceding click. ${hint} To start an independent browser, use --isolated. No automatic fallback was attempted.`);
         }
         await cli.executeInstruction(options.instruction);
-        report.status = 'succeeded';
+        report.status = cli.pendingDialog ? 'awaiting-dialog' : 'succeeded';
         saveReport();
     } catch (error) {
         report.status = 'failed';

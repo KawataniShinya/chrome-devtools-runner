@@ -3,6 +3,7 @@
 <head><meta charset="utf-8"><title>Runner検証</title></head>
 <body>
     <h1>タイトル</h1>
+    <button onclick="window.confirmed = confirm('Continue?'); document.querySelector('#dialog-result').textContent = window.confirmed ? 'accepted' : 'dismissed'">Confirm dialog</button><p id="dialog-result"></p>
     <button class="save" onclick="window.clicks++">保存</button>
     <button class="save" onclick="window.clicks++">保存</button>
     <form id="target" onsubmit="event.preventDefault(); window.submissions++">
