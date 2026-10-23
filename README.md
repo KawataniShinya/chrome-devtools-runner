@@ -2,6 +2,24 @@
 
 Chrome DevTools MCP 経由で Chrome を操作し、画面遷移・入力・表示結果を検証する Codex skill / CLI です。
 
+## 導入
+
+Git、Google Chrome と Node.js `^20.19.0 || ^22.12.0 || >=23`、npm が必要です。検証環境は macOS / Node.js 24.15.0 です。
+
+以下のコマンドでスキルを配置し、依存パッケージをインストールします。
+
+```sh
+mkdir -p ~/.codex/skills
+cd ~/.codex/skills
+git clone https://github.com/KawataniShinya/chrome-devtools-runner.git
+cd chrome-devtools-runner
+npm ci --ignore-scripts
+```
+
+プロジェクト配下に配置した場合は、その skill ディレクトリで実行してください。依存取得時にはネットワーク接続が必要です。通常起動ではローカルに導入した **chrome-devtools-mcp 1.10.1** を使い、自動ダウンロード・自動更新はしません。依存は `package-lock.json` で固定しています。未導入やバージョン不一致は、ブラウザ起動前にエラーになります。
+
+以下のCLI実行例は `~/.codex/skills/chrome-devtools-runner` を作業ディレクトリとしています。別の場所からは `scripts/chrome-devtools-runner.js` を絶対パスで指定してください。ルートの shim は不要です。
+
 ## Codexへの依頼方法（プロンプト例）
 
 以下の文章をCodexに送って依頼できます。URLと確認内容は対象に合わせて置き換えてください。CLIのオプションを覚える必要はありません。
@@ -175,19 +193,6 @@ sequenceDiagram
 1つの命令で、対象の検索・操作・結果確認のために複数回のツール呼び出しが発生することがあります。エラー時は後続の命令を停止し、取得できた診断情報を返します。
 
 `http://127.0.0.1:9222` は、既存 CDP モードなどで使う **Chrome の操作用接続先**です。`http://localhost:3000/login` などの **確認対象ページのURL**とは用途が異なります。既存Chromeの自動接続モードと独立Chromeモードでは、利用者がこのポートを指定する必要はありません。各モードで誰が Chrome を起動するかは、次の「ブラウザ接続」を参照してください。
-
-## 導入
-
-Google Chrome と Node.js `^20.19.0 || ^22.12.0 || >=23`、npm が必要です。検証環境は macOS / Node.js 24.15.0 です。
-
-```sh
-cd ~/.codex/skills/chrome-devtools-runner
-npm ci --ignore-scripts
-```
-
-プロジェクト配下に配置した場合は、その skill ディレクトリで実行してください。依存取得時にはネットワーク接続が必要です。通常起動ではローカルに導入した **chrome-devtools-mcp 1.10.1** を使い、自動ダウンロード・自動更新はしません。依存は `package-lock.json` で固定しています。未導入やバージョン不一致は、ブラウザ起動前にエラーになります。
-
-以下の例はこのディレクトリを作業ディレクトリとしています。別の場所からは `scripts/chrome-devtools-runner.js` を絶対パスで指定してください。ルートの shim は不要です。
 
 ## ブラウザ接続
 
