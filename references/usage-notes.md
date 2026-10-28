@@ -17,7 +17,7 @@ npm run test:browser
 | `tests/diagnostics.test.js` | 非同期エラー診断、診断タイムアウト、画面情報の省略・フィルタ、逐次結果、JSONレポート |
 | `tests/connection.test.js` | 通常CDP・許可付きWebSocketの検出、モード競合、タブ明示選択、曖昧タブの拒否、遷移失敗時の再試行防止 |
 | `tests/browser/connection.test.js` | 既存CDPへ再接続、未選択時の誤遷移防止、外部Chromeの維持、接続失敗案内 |
-| `tests/version.test.js` | exact バージョンと lock の一致、未導入・不一致時の停止、明示サーバー、新旧 pageId スキーマ |
+| `tests/version.test.js` | exact バージョンと lock の一致、未導入・不一致時の停止、明示サーバー、新旧 pageId スキーマ、ES Modules プロジェクト配下での起動 |
 | `tests/browser/smoke.test.js` | 実 MCP 初期化・バージョン、画面取得、引用符付き入力、対象フォーム送信、曖昧クリック拒否、画面幅 |
 
 ブラウザテストは `--headless --isolated` の Chrome とローカル fixture を使います。外部サイトの認証情報は不要です。終了時は MCP を閉じます。通常の Chrome 更新は固定していないため、MCP の固定だけで全実行環境の再現性を保証するものではありません。

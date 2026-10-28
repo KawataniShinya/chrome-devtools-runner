@@ -63,3 +63,24 @@ for (const hasPageId of [true, false]) {
         assert.deepEqual(received[1], {pageId: 8});
     });
 }
+
+// The skill owns its module boundary, independently of the host project.
+test('runner starts inside an ESM host project', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-esm-'));
+    try {
+        fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({type: 'module'}));
+        const skill = path.join(root, '.codex/skills/chrome-devtools-runner');
+        fs.mkdirSync(path.join(skill, 'scripts'), {recursive: true});
+        fs.copyFileSync(path.resolve(__dirname, '../package.json'), path.join(skill, 'package.json'));
+        fs.copyFileSync(path.resolve(__dirname, '../scripts/chrome-devtools-runner.js'), path.join(skill, 'scripts/chrome-devtools-runner.js'));
+        const result = spawnSync(process.execPath, [
+            path.join(skill, 'scripts/chrome-devtools-runner.js'),
+        ], {cwd: root, encoding: 'utf8', timeout: 5000});
+        // No instruction prints usage without launching Chrome or MCP.
+        assert.equal(result.status, 1, result.stderr);
+        assert.match(result.stderr, /Usage:/i);
+        assert.doesNotMatch(result.stderr, /require is not defined|MODULE_TYPELESS_PACKAGE_JSON/);
+    } finally {
+        fs.rmSync(root, {recursive: true, force: true});
+    }
+});

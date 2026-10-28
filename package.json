@@ -2,6 +2,7 @@
   "name": "chrome-devtools-runner",
   "version": "0.1.0",
   "private": true,
+  "type": "commonjs",
   "description": "Browser validation runner for Codex skills",
   "license": "MIT",
   "engines": {
