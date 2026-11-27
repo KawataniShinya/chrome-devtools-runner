@@ -42,6 +42,21 @@ test('existing CDP reconnects without navigating another tab; missing target sto
         assert.match(success.stdout, /mode=existing/);
         assert.match(success.stdout, /Switched to tab/);
         assert.match(success.stdout, /Runner検証/);
+        const upload = path.join(profile, 'sample input.txt');
+        const download = path.join(profile, 'saved report.txt');
+        fs.writeFileSync(upload, 'sample');
+        const actions = [
+            `switch tab ${fixture}`, 'reload fresh', 'list assets',
+            'select option "section >> select" Mail', 'expect value "section >> select" Mail',
+            'set date "label=Delivery date" 2026-01-15', 'expect value "label=Delivery date" 2026-01-15',
+            'check "label=Confirmed"', 'expect state "label=Confirmed" checked',
+            'uncheck "label=Confirmed"', 'expect state "label=Confirmed" unchecked',
+            'expect count ".save" 2', `upload "section >> input[type=file]" "${upload}"`,
+            'expect content "#filename" "sample input.txt"', `download "text=Download report" "${download}"`,
+        ];
+        const transfer = await run([...args, actions.join(' then ')]);
+        assert.equal(transfer.code, 0, transfer.stderr);
+        assert.equal(fs.readFileSync(download, 'utf8'), 'report');
         const unselected = await run([...args, 'open https://example.invalid']);
         assert.equal(unselected.code, 1);
         assert.match(unselected.stderr, /explicitly selected tab/);

@@ -24,6 +24,7 @@ for (const installedVersion of [null, '0.0.0']) {
         try {
             fs.mkdirSync(path.join(root, 'scripts'));
             fs.copyFileSync(path.resolve(__dirname, '../scripts/chrome-devtools-runner.js'), path.join(root, 'scripts/runner.js'));
+            fs.copyFileSync(path.resolve(__dirname, '../scripts/standard-actions.js'), path.join(root, 'scripts/standard-actions.js'));
             fs.copyFileSync(path.resolve(__dirname, '../package.json'), path.join(root, 'package.json'));
             if (installedVersion) {
                 const dependency = path.join(root, 'node_modules/chrome-devtools-mcp');
