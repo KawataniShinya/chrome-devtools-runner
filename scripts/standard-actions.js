@@ -9,7 +9,7 @@ const {randomUUID} = require('node:crypto');
 const arities = {
     'click target': 1, 'select option': 2, 'set date': 2, 'fill field': 2, 'expect path': 1, 'expect asset': 1, check: 1, uncheck: 1,
     'expect value': 2, 'expect count': 2, 'expect state': 2, 'expect content': 2,
-    upload: 2, download: 2, 'reload fresh': 0, 'list assets': 0,
+    upload: 2, download: 2, 'reload fresh': 0, 'list assets': 0, 'inspect candidates': 1,
 };
 
 function parse(segment, unquote) {
@@ -25,7 +25,7 @@ function parse(segment, unquote) {
 }
 
 // This function executes inside the selected page. Each intermediate scope must be unique.
-function locate(locator) {
+function locate(locator, waitForScope = false) {
     const norm = s => String(s ?? '').replace(/\s+/g, ' ').trim();
     const visible = el => el.getClientRects().length && getComputedStyle(el).visibility === 'visible';
     let root = document;
@@ -54,9 +54,73 @@ function locate(locator) {
             matches = Array.from(root.querySelectorAll(part.replace(/^css=/, '')));
         }
         if (index === parts.length - 1) return matches;
+        if (waitForScope && matches.length === 0) return [];
         if (matches.length !== 1) throw Error('Scope matched ' + matches.length + ' elements: ' + part);
         root = matches[0];
     }
+}
+
+// Serialized into the selected page; never read the contents of editable fields.
+function describeControl(el) {
+    const tag = el.localName;
+    const roles = {button:'button', textarea:'textbox', select:el.multiple ? 'listbox' : 'combobox', summary:'button', li:'listitem'};
+    const inputs = {button:'button', submit:'button', reset:'button', radio:'radio', checkbox:'checkbox', range:'slider', number:'spinbutton', search:'searchbox'};
+    const role = el.getAttribute('role') || (tag === 'a' && el.hasAttribute('href') ? 'link' :
+        tag === 'input' ? inputs[el.type] || 'textbox' : roles[tag] || tag);
+    const referenced = (el.getAttribute('aria-labelledby') || '').split(/\s+/)
+        .map(id => document.getElementById(id)?.textContent).filter(Boolean).join(' ');
+    const labels = Array.from(el.labels || [], l => l.textContent).join(' ');
+    const name = referenced || el.getAttribute('aria-label') || labels || el.getAttribute('alt') ||
+        (el.matches('button,a,summary,li,[role=button],[role=link],[role=tab]') ? el.innerText : '') || el.title || '';
+    const rect = el.getBoundingClientRect();
+    return {tag, role, name:name.trim().replace(/\s+/g, ' ').slice(0, 100),
+        selector:tag + (el.id ? '#' + CSS.escape(el.id) : [...el.classList].slice(0, 3).map(c => '.' + CSS.escape(c)).join('')),
+        visible:rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility === 'visible',
+        enabled:!el.matches(':disabled') && !el.closest('button:disabled,[inert],[aria-disabled=true]')};
+}
+
+function inspectCandidates(find, describe, scope) {
+    const roots = find(scope);
+    if (roots.length !== 1) throw Error('Candidate scope matched ' + roots.length + ' elements');
+    const controls = Array.from(roots[0].querySelectorAll('*')).filter(el =>
+        el.matches('button,a[href],input:not([type=hidden]),select,textarea,summary,[role],[tabindex],[onclick]') ||
+        (getComputedStyle(el).cursor === 'pointer' && (getComputedStyle(el.parentElement).cursor !== 'pointer' || el.matches('li'))));
+    return {count:controls.length, candidates:controls.slice(0, 80).map(describe), omitted:Math.max(0, controls.length - 80)};
+}
+
+async function waitForClick(find, describe, locator, usePointer) {
+    const deadline = performance.now() + 10000;
+    let previous;
+    let reason;
+    do {
+        const matches = find(locator, true);
+        if (matches.length > 1) throw Error('Ambiguous click: ' + matches.length + ' matches ' + JSON.stringify(matches.slice(0, 5).map(describe)));
+        const el = matches[0];
+        const state = el && describe(el);
+        if (!state?.visible || !state.enabled) {
+            previous = undefined;
+            reason = !el ? 'missing' : !state.visible ? 'hidden' : 'disabled';
+        } else {
+            el.scrollIntoView({block:'center', inline:'nearest', behavior:'instant'});
+            const r = el.getBoundingClientRect();
+            const x = (Math.max(0, r.left) + Math.min(innerWidth, r.right)) / 2;
+            const y = (Math.max(0, r.top) + Math.min(innerHeight, r.bottom)) / 2;
+            const geometry = [r.left,r.top,r.width,r.height].join(',');
+            const hit = document.elementFromPoint(x, y);
+            if (!hit || !el.contains(hit)) {
+                previous = undefined;
+                reason = hit ? 'covered by ' + describe(hit).selector : 'outside viewport';
+            } else if (previous?.el === el && previous.geometry === geometry) {
+                if (!usePointer) el.click();
+                return {x,y};
+            } else {
+                previous = {el, geometry};
+                reason = 'moving or replaced';
+            }
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+    } while (performance.now() < deadline);
+    throw Error('Click timed out: ' + locator + ' (' + reason + ')');
 }
 
 function interact(find, action) {
@@ -84,8 +148,7 @@ function interact(find, action) {
         return {ok: states[value], actual: states[value] ? value : 'not ' + value};
     }
     if (!visible(el) || disabled) return fail('target is hidden or disabled');
-    if (type === 'click-target') el.click();
-    else if (type === 'select-option') {
+    if (type === 'select-option') {
         if (!(el instanceof HTMLSelectElement)) return fail('target is not a select');
         const opts = [...el.options].filter(o => o.label === value);
         if (opts.length !== 1 || opts[0].matches(':disabled')) return fail('option unavailable or ambiguous');
@@ -190,6 +253,19 @@ async function saveDownload(page, element, destination) {
 
 async function execute(cli, action, unwrap, plainText) {
     const evaluate = async fn => unwrap(await cli.callTool(cli.requireTool('evaluate_script'), {function:fn}));
+    if (action.type === 'inspect-candidates') {
+        return JSON.stringify(await evaluate(`() => (${inspectCandidates})((${locate}),(${describeControl}),${JSON.stringify(action.target)})`));
+    }
+    if (action.type === 'click-target') {
+        const pointer = cli.hasTool('click_at');
+        const point = await evaluate(`async () => (${waitForClick})((${locate}),(${describeControl}),${JSON.stringify(action.target)},${pointer})`);
+        if (pointer) {
+            const result = await cli.callTool('click_at', {x:point.x, y:point.y, includeSnapshot:false});
+            if (/# Open dialog\b/.test(plainText(result)) || result.structuredContent?.dialog) cli.pendingDialog = true;
+        }
+        cli.latestSnapshot = null;
+        return 'Clicked target' + (cli.pendingDialog ? '; awaiting dialog' : '');
+    }
     if (action.type === 'upload' || action.type === 'download') return fileAction(cli, action, evaluate);
     if (action.type === 'reload-fresh') {
         const result = await cli.callTool(cli.requireTool('navigate_page'), {type:'reload', ignoreCache:true});

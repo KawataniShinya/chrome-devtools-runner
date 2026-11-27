@@ -2747,7 +2747,7 @@ function buildServerCommand(options = {}) {
         if (installedVersion !== expectedVersion || !fs.existsSync(entryPoint)) {
             throw new Error(`Pinned chrome-devtools-mcp ${expectedVersion} is not installed. Run npm ci --ignore-scripts in ${skillDirectory}.`);
         }
-        command = `${quoteShellArg(process.execPath)} ${quoteShellArg(entryPoint)}`;
+        command = `${quoteShellArg(process.execPath)} ${quoteShellArg(entryPoint)} --experimentalVision=true`;
     }
 
     if (options.browserMode === 'existing' && !options.browserUrl && !options.wsEndpoint) command += ' --autoConnect';

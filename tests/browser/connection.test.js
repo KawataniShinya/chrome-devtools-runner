@@ -57,6 +57,20 @@ test('existing CDP reconnects without navigating another tab; missing target sto
         const transfer = await run([...args, actions.join(' then ')]);
         assert.equal(transfer.code, 0, transfer.stderr);
         assert.equal(fs.readFileSync(download, 'utf8'), 'report');
+        const shipment = await run([...args, [
+            `switch tab ${fixture}`, 'inspect candidates "#shipping"',
+            'click target "#prepare"', 'click target "label=Ship now"',
+            'expect content "#shipment" "true/true/1"',
+        ].join(' then ')]);
+        assert.equal(shipment.code, 0, shipment.stderr);
+        assert.match(shipment.stdout, /"count":2/);
+        assert.match(shipment.stdout, /"name":"Ship now"/);
+        const ambiguous = await run([...args, `switch tab ${fixture} then click target "text=保存"`]);
+        assert.equal(ambiguous.code, 1);
+        assert.match(ambiguous.stderr, /Ambiguous click: 2 matches/);
+        const untouched = await run([...args, `switch tab ${fixture} then eval () => window.clicks`]);
+        assert.equal(untouched.code, 0, untouched.stderr);
+        assert.match(untouched.stdout, /Eval: 0/);
         const unselected = await run([...args, 'open https://example.invalid']);
         assert.equal(unselected.code, 1);
         assert.match(unselected.stderr, /explicitly selected tab/);
