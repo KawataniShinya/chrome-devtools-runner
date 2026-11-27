@@ -21,5 +21,30 @@
         <a download="report.txt" href="data:text/plain,report">Download report</a>
     </section>
     <script>window.clicks=0; window.submissions=0; window.otherSubmissions=0;</script>
+    <div id="shipping">
+        <button id="prepare">Prepare shipment</button>
+        <button id="ship" aria-label="Ship now">Ship</button>
+        <output id="shipment"></output>
+    </div>
+    <script>
+        const shipping = document.querySelector('#shipping');
+        let shipmentClicks = 0;
+        shipping.querySelector('#prepare').onclick = () => {
+            const cover = document.createElement('div');
+            cover.style.cssText = 'position:fixed;inset:0;z-index:100;background:white';
+            document.body.append(cover);
+            const original = shipping.querySelector('#ship');
+            original.onclick = () => { shipping.querySelector('output').textContent = 'stale click'; };
+            setTimeout(() => {
+                const replacement = original.cloneNode(true);
+                original.replaceWith(replacement);
+                replacement.onclick = event => {
+                    shipping.querySelector('output').textContent =
+                        [event.isTrusted, !cover.isConnected, ++shipmentClicks].join('/');
+                };
+            }, 350);
+            setTimeout(() => cover.remove(), 700);
+        };
+    </script>
 </body>
 </html>

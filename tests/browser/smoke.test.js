@@ -29,6 +29,17 @@ test('pinned MCP and isolated Chrome execute safe browser flows', {timeout: 9000
         await cli.executeInstruction('dismiss dialog then expect text dismissed');
         await cli.executeInstruction('click "Confirm dialog" then accept dialog then expect text accepted');
 
+        // A blocker which never leaves must time out without sending input.
+        await cli.evaluateScript(`() => {
+            const cover = document.createElement('div');
+            cover.id = 'cover';
+            cover.style.cssText = 'position:fixed;inset:0;z-index:99';
+            cover.onclick = () => window.clicks++;
+            document.body.append(cover);
+        }`);
+        await assert.rejects(cli.executeInstruction('click target "#prepare"'), /covered by div#cover/);
+        assert.match(await cli.evaluateScript('() => String(window.clicks)'), /0/);
+
     } finally {
         await client.close();
     }
