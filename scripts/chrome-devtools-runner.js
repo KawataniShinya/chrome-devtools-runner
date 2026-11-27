@@ -23,6 +23,7 @@
  *   Default: locally installed, package-lock.json-pinned chrome-devtools-mcp
  */
 
+const standard = require('./standard-actions');
 const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
@@ -554,6 +555,7 @@ class ChromeMcpCli {
         this.client = client;
         this.debug = Boolean(options.debug);
         this.browserUrl = options.browserUrl || null;
+        this.wsEndpoint = options.wsEndpoint || null;
         this.toolsByName = new Map();
         this.latestSnapshot = null;
         this.currentPageId = null;
@@ -632,6 +634,8 @@ class ChromeMcpCli {
     }
 
     parseSegment(segment) {
+        const action = standard.parse(segment, stripWrappingQuotes);
+        if (action) return action;
         const titlePattern = /^(?:get\s+)?title$/i;
         if (titlePattern.test(segment) || /^タイトル(?:を)?(?:取得して|教えて|表示して|確認して)?$/.test(segment)) {
             return {type: 'title'};
@@ -871,6 +875,7 @@ class ChromeMcpCli {
         this.pendingDialog = false;
         for (const action of actions) {
             if (['type', 'type-active'].includes(action.type)) rememberInput(action.text);
+            if (['fill-field','set-date','select-option','expect-value'].includes(action.type)) rememberInput(action.value);
         }
         const outputs = [];
         this.results = [];
@@ -915,6 +920,7 @@ class ChromeMcpCli {
                 await this.ensureSelectedPageContext();
             }
 
+            if (standard.types.has(action.type)) return await standard.execute(this, action, unwrapToolResult, extractPlainText);
             switch (action.type) {
             case 'read-page':
                 return await this.readPage();
@@ -3101,6 +3107,7 @@ async function main() {
             const parser = new ChromeMcpCli({tools: []});
             for (const action of parser.parseInstruction(options.instruction)) {
                 if (['type', 'type-active'].includes(action.type)) rememberInput(action.text);
+                if (['fill-field','set-date','select-option','expect-value'].includes(action.type)) rememberInput(action.value);
             }
         }
         if (options.outputPath !== null) {
@@ -3134,6 +3141,7 @@ async function main() {
         const cli = new ChromeMcpCli(client, {
             debug: options.debug,
             browserUrl: runtime.browserUrl,
+            wsEndpoint: runtime.wsEndpoint,
             view: options.view,
             requireExplicitTab: runtime.browserMode === 'existing',
             onResult: record => {

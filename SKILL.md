@@ -65,3 +65,12 @@ Use the bundled runner script for browser-driven validation.
 - Runner implementation: `scripts/chrome-devtools-runner.js`
 - Setup and CLI examples: [README.md](README.md)
 - Regression tests, version updates and troubleshooting: [references/usage-notes.md](references/usage-notes.md)
+
+## Standard regression actions
+
+Use these actions for recurring flows. Quote each argument that contains spaces. A locator can be CSS, `text=exact visible text`, `label=accessible label`, or `row=exact cell text`. Chain scopes with ` >> `; each intermediate scope must identify one element. `closest=CSS` moves from that scope to its nearest matching ancestor.
+
+- Use `click target LOCATOR`, `fill field LOCATOR VALUE`, `select option LOCATOR LABEL`, `set date LOCATOR VALUE`, `check LOCATOR`, and `uncheck LOCATOR`. Dates use the input's accepted format. Pass private inputs via stdin.
+- Use `expect count LOCATOR N`, `expect value LOCATOR VALUE`, `expect content LOCATOR TEXT`, `expect state LOCATOR STATE`, and `expect path /exact/path` for retrying observations. State can be visible, hidden, enabled, disabled, checked, or unchecked. Mutations execute once.
+- Use `download LOCATOR NEW_PATH` to arm the download listener before the click and save the completed file. Use a dedicated local browser context for downloads; its download behavior is temporarily changed. Use `upload LOCATOR FILE` for a local file input (or `uid:ID` for a snapshot target). File transfer by DOM locator requires a local CDP endpoint.
+- Use `reload fresh` for a cache-bypassing reload, `list assets` for loaded HTTP resource paths and transfer sizes, and `expect asset /path/to/asset.js` for an exact resource-path check.

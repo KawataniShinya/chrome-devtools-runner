@@ -12,6 +12,14 @@
         <button type="submit">送信</button>
     </form>
     <form id="other" onsubmit="event.preventDefault(); window.otherSubmissions++"><input name="other"></form>
+    <section aria-label="Delivery">
+        <label>Method <select><option>Pickup</option><option>Mail</option></select></label>
+        <input type="date" aria-label="Delivery date">
+        <input type="checkbox" aria-label="Confirmed">
+        <input type="file" onchange="document.querySelector('#filename').textContent=this.files[0]?.name">
+        <output id="filename"></output>
+        <a download="report.txt" href="data:text/plain,report">Download report</a>
+    </section>
     <script>window.clicks=0; window.submissions=0; window.otherSubmissions=0;</script>
 </body>
 </html>
