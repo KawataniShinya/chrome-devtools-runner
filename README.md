@@ -252,7 +252,7 @@ Chromeの設定画面でサーバー稼働中と表示されていても、許�
 node scripts/chrome-devtools-runner.js --browser-url http://127.0.0.1:9222 "list tabs then switch tab 1 then read page"
 ```
 
-再接続時は毎回明示選択が必要です。`new tab URL` で作成した場合も、その後に `list tabs` と `switch tab` で対象を選択します。タブを閉じた後は、次の操作前に選択し直してください。選択したタブへの遷移が失敗しても、別タブに切り替えて再試行しません。
+既存のChromeへの接続時、`switch tab` は操作対象のタブを選択します。この選択でChromeを前面に出す要求は送りません。再接続時は毎回明示選択が必要です。`new tab URL` で作成した場合も、その後に `list tabs` と `switch tab` で対象を選択します。タブを閉じた後は、次の操作前に選択し直してください。選択したタブへの遷移が失敗しても、別タブに切り替えて再試行しません。
 
 ### 独立したChromeを使う
 
