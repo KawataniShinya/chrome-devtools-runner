@@ -1844,7 +1844,8 @@ class ChromeMcpCli {
             throw new Error(`Tab not found: ${target}`);
         }
 
-        await this.selectPage(page, true);
+        // Reconnecting selects an automation target without raising the user’s Chrome window.
+        await this.selectPage(page, !this.requireExplicitTab);
         this.explicitTabSelected = true;
         await this.waitForSelectedPage(page).catch(error => {
             this.logDebug('selected tab verification failed:', error.message);

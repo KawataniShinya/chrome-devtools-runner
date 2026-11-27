@@ -29,7 +29,7 @@ function existingCli() {
     const calls = [];
     const cli = new ChromeMcpCli({tools: [], callTool: async () => {}}, {requireExplicitTab: true});
     cli.listPages = async () => [{pageId: 1, index: 1, selected: true, title: 'One', url: 'https://example.test/one'}, {pageId: 2, index: 2, title: 'Two', url: 'https://example.test/two'}];
-    cli.selectPage = async page => { calls.push(page); cli.currentPageId = page.pageId; };
+    cli.selectPage = async (page, bringToFront) => { calls.push({pageId: page.pageId, bringToFront}); cli.currentPageId = page.pageId; };
     cli.waitForSelectedPage = async () => {};
     return {cli, calls};
 }
@@ -52,6 +52,7 @@ test('exact URL selects a target, duplicate URLs and positional aliases do not',
     for (const target of ['current', 'first', 'last', 'example.test']) await assert.rejects(cli.switchTab(target));
     assert.deepEqual(calls, []);
     await cli.switchTab('https://example.test/one');
+    assert.deepEqual(calls, [{pageId: 1, bringToFront: false}]);
     assert.equal(cli.explicitTabSelected, true);
     assert.equal(cli.currentPageId, 1);
     cli.listPages = async () => [{pageId: 1, url: 'https://example.test/duplicate'}, {pageId: 2, url: 'https://example.test/duplicate'}];
